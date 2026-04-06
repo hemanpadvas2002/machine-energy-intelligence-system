@@ -4,9 +4,31 @@
 
 This project focuses on monitoring and analysing machine-level power consumption to build intelligent insights around energy usage.
 
-The system is designed to track voltage, current, and power consumption of machines in real-time, and use that data to predict future energy usage, detect anomalies, and enable predictive maintenance.
+The system tracks voltage, current, and power consumption of machines in real-time, and uses that data to predict future energy usage, detect anomalies, and enable predictive maintenance.
 
-It also helps estimate the operational cost of running machines — from simple appliances like air conditioners to heavy industrial machinery used in manufacturing.
+It also estimates the operational cost of running machines — from simple appliances like air conditioners to industrial machinery used in manufacturing.
+
+---
+
+## 📸 System Interface
+
+### Live Dashboard
+
+Real-time monitoring of machine energy parameters
+
+![Dashboard](dashboard.png)
+
+### Historical Data View
+
+Analysis of past machine performance and consumption trends
+
+![Past Data](past_data-view.png)
+
+### Add Machine Interface
+
+Configuration panel for adding and managing machines
+
+![Add Machine](add_machine.png)
 
 ---
 
@@ -45,6 +67,17 @@ This system introduces a data-driven approach to:
 
 ---
 
+## ⚙️ Configuration Note (Important)
+
+To run this system locally or connect to actual machines:
+
+* The **IP address and Port number must be configured manually** in the code.
+* These values define the connection to the data source (e.g., Modbus device or machine interface).
+
+👉 Update the configuration inside the relevant files (such as data fetcher or settings module) before running the application.
+
+---
+
 ## Use Cases
 
 * Cost estimation for manufacturing processes
@@ -60,7 +93,7 @@ This system introduces a data-driven approach to:
 * Integration with IoT sensors
 * Machine learning models for prediction
 * Automated alerts for anomalies
-* Dashboard for real-time analytics
+* Advanced real-time analytics dashboard
 * Integration with ERP / industrial systems
 
 ---

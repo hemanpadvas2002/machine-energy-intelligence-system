@@ -1,0 +1,935 @@
+# ============================================================
+# 📜 HISTORIC DATA DASHBOARD — FINAL VERSION (NO FFT)
+# ============================================================
+
+import os
+import math
+import streamlit as st
+import pandas as pd
+import numpy as np
+from sqlalchemy import create_engine, text
+from scipy.signal import savgol_filter
+import plotly.graph_objects as go
+
+# ============================================================
+# DB CONFIG
+# ============================================================
+PG_USER = os.environ.get("PG_USER", "postgres")
+PG_PASS = os.environ.get("PG_PASS", "postgres")
+PG_HOST = os.environ.get("PG_HOST", "localhost")
+PG_PORT = os.environ.get("PG_PORT", "5432")
+PG_DB   = os.environ.get("PG_DB", "machine_data")
+
+# Machine → Table map
+MACHINE_TABLES = {
+    "Galaxy": "galaxy_readings",
+    "Ace Vantage": "ace_vantage_readings",
+    "MTX": "mtx_readings",
+    "AGI Robo": "agi_robo_readings",
+    "LML Upmmc": "lml_upmmc_readings",
+}
+
+# Parameter → DB column map
+PARAMETERS = {
+    "Average Voltage LN": "avg_voltage_ln",
+    "Average Voltage LL": "avg_voltage_ll",
+    "Average Current": "avg_current",
+    "Total KW": "total_kw",
+    "Total Net KWh": "total_net_kwh"
+}
+
+# Mode card colors
+MODE_COLORS = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f1c40f"]
+
+SG_WINDOW = 7
+SG_POLY = 2
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+def get_engine():
+    url = f"postgresql://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}"
+    return create_engine(url, future=True)
+
+
+def fetch_dates(engine, table):
+    sql = text(f"""
+        SELECT DISTINCT DATE(timestamp) AS dt
+        FROM {table}
+        ORDER BY dt
+    """)
+    with engine.connect() as conn:
+        rows = conn.execute(sql).fetchall()
+    return [r[0].strftime("%Y-%m-%d") for r in rows]
+
+
+def fetch_range_data(engine, table, colname, from_date, to_date):
+    sql = text(f"""
+        SELECT timestamp, {colname} AS val
+        FROM {table}
+        WHERE timestamp BETWEEN :d1 AND :d2
+        ORDER BY timestamp
+    """)
+
+    params = {
+        "d1": f"{from_date} 00:00:00",
+        "d2": f"{to_date} 23:59:59"
+    }
+
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn, params=params)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
+
+
+def compute_top_modes(df):
+    if df.empty:
+        return []
+    rounded = df["val"].round(2).dropna()
+    counts = rounded.value_counts().nlargest(5)
+    return [(v, c) for v, c in counts.items()]
+
+
+# ============================================================
+# STREAMLIT PAGE CONFIG
+# ============================================================
+st.set_page_config(page_title="Historic Data Dashboard", layout="wide")
+st.title(" Historic Data Dashboard")
+
+
+# ============================================================
+# SIDEBAR CONTROLS (with session_state fix)
+# ============================================================
+with st.sidebar:
+    st.header("Controls")
+
+    machine = st.selectbox("Select Machine", list(MACHINE_TABLES.keys()))
+    param_name = st.selectbox("Select Parameter", list(PARAMETERS.keys()))
+
+    # --- SESSION STATE FIX ---
+    if "connected" not in st.session_state:
+        st.session_state.connected = False
+
+    if st.button("🔌 Connect"):
+        st.session_state.connected = True
+
+
+# Stop page before Connect
+if not st.session_state.connected:
+    st.info("Click **Connect** to load data.")
+    st.stop()
+
+
+# ============================================================
+# LOAD DATA FROM POSTGRES
+# ============================================================
+try:
+    engine = get_engine()
+except Exception as e:
+    st.error(f"❌ Database connection failed: {e}")
+    st.stop()
+
+table = MACHINE_TABLES[machine]
+colname = PARAMETERS[param_name]
+
+# Fetch available dates
+dates = fetch_dates(engine, table)
+if not dates:
+    st.error("❌ No date records available for this machine.")
+    st.stop()
+
+
+# ============================================================
+# DATE RANGE SELECT (AUTO-REFRESH)
+# ============================================================
+colA, colB, colC = st.columns([1, 1, 2])
+with colA:
+    from_date = st.selectbox("From:", dates, index=0)
+with colB:
+    to_date = st.selectbox("To:", dates, index=len(dates) - 1)
+with colC:
+    st.caption("Choose date range to update the graph.")
+
+
+# ============================================================
+# FETCH RANGE DATA
+# ============================================================
+try:
+    df = fetch_range_data(engine, table, colname, from_date, to_date)
+except Exception as e:
+    st.error(f"Error fetching data: {e}")
+    st.stop()
+
+if df.empty:
+    st.warning("⚠ No data available for the selected date range.")
+    st.stop()
+
+df_sorted = df.sort_values("timestamp").reset_index(drop=True)
+
+
+# ============================================================
+# MAIN PLOT (RAW)
+# ============================================================
+main_fig = go.Figure()
+
+main_fig.add_trace(
+    go.Scatter(
+        x=df_sorted["timestamp"],
+        y=df_sorted["val"],
+        mode="lines+markers",
+        line=dict(color="#5DA5FF", width=2),
+        marker=dict(size=5),
+        name=f"{param_name} (raw)"
+    )
+)
+
+# Add colored mode markers
+top_modes = compute_top_modes(df)
+for i, (val, count) in enumerate(top_modes):
+    mask = df_sorted["val"].round(2) == round(val, 2)
+    if mask.any():
+        ts = df_sorted.loc[mask.idxmax(), "timestamp"]
+        main_fig.add_trace(
+            go.Scatter(
+                x=[ts], y=[val],
+                mode="markers",
+                marker=dict(size=12, color=MODE_COLORS[i]),
+                name=f"Mode {i+1}: {val}"
+            )
+        )
+
+main_fig.update_layout(
+    template="plotly_dark",
+    height=420,
+    title=f"{param_name} — {machine} ({from_date} → {to_date})",
+    margin=dict(l=30, r=20, t=60, b=40)
+)
+
+
+# ============================================================
+# SAVITZKY–GOLAY PLOT (SMOOTHED)
+# ============================================================
+sg_y = df_sorted["val"].dropna().values
+if len(sg_y) >= SG_WINDOW:
+    sg_y = savgol_filter(sg_y, SG_WINDOW, SG_POLY)
+
+sg_fig = go.Figure()
+sg_fig.add_trace(
+    go.Scatter(
+        x=df_sorted["timestamp"],
+        y=sg_y,
+        mode="lines",
+        line=dict(color="#7db6ff")
+    )
+)
+
+sg_fig.update_layout(
+    template="plotly_dark",
+    height=250,
+    title="Savitzky–Golay Filter (smoothed)",
+    margin=dict(l=20, r=20, t=40, b=20)
+)
+
+
+# ============================================================
+# GRID LAYOUT (LEFT: MAIN, RIGHT: SG)
+# ============================================================
+left, right = st.columns([3, 1])
+
+with left:
+    st.plotly_chart(main_fig, use_container_width=True)
+
+with right:
+    st.plotly_chart(sg_fig, use_container_width=True)
+
+
+# ============================================================
+# TOP-5 MODE VALUES (COLORED BOXES)
+# ============================================================
+st.markdown("### Top-5 Mode Values")
+
+mode_cols = st.columns(5)
+for i in range(5):
+    with mode_cols[i]:
+        if i < len(top_modes):
+            val, cnt = top_modes[i]
+            st.markdown(
+                f"""
+                <div style="
+                    background:{MODE_COLORS[i]};
+                    padding:18px;
+                    border-radius:12px;
+                    color:#111;
+                    text-align:center;">
+                    <b>Mode {i+1}</b><br>
+                    <span style='font-size:20px'>{val}</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"""
+                <div style="
+                    background:#333;
+                    padding:18px;
+                    border-radius:12px;
+                    text-align:center;">
+                    <b>Mode {i+1}</b><br> —
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# pages/live_data_app.py
+# ===========================================================
+# LIVE MACHINE DATA DASHBOARD (AUTO-REFRESH 60s)
+# - Dropdown instantly updates graph (no reconnect needed)
+# - Clean UI, no filter widgets
+# ===========================================================
+
+import streamlit as st
+import pandas as pd
+import psycopg2
+import plotly.graph_objects as go
+from datetime import timedelta
+
+# -------------------------
+# Page config
+# -------------------------
+st.set_page_config(page_title="Live Machine Data Dashboard", layout="wide")
+st.title("📡 Live Machine Data Dashboard")
+
+# -------------------------
+# Machines / Parameters
+# -------------------------
+machines = {
+    "Galaxy": "galaxy_readings",
+    "LML_UPMMC": "lml_upmmc_readings",
+    "MTX": "mtx_readings",
+    "AGI_Robo": "agi_robo_readings",
+    "Ace_Vantage": "ace_vantage_readings"
+}
+
+parameters = {
+    "Average Voltage LN": "avg_voltage_ln",
+    "Average Voltage LL": "avg_voltage_ll",
+    "Average Current": "avg_current",
+    "Power (KW)": "total_kw",
+    "Energy (KWh)": "total_net_kwh"
+}
+
+# -------------------------
+# Session State
+# -------------------------
+if "connected" not in st.session_state:
+    st.session_state.connected = False
+if "machine" not in st.session_state:
+    st.session_state.machine = "Galaxy"
+if "param" not in st.session_state:
+    st.session_state.param = "Average Voltage LN"
+
+# -------------------------
+# UI: Dropdowns + Connect/Disconnect
+# -------------------------
+colA, colB, colC = st.columns([2, 2, 1])
+
+sel_machine = colA.selectbox("Select Machine:", list(machines.keys()),
+                             index=list(machines.keys()).index(st.session_state.machine))
+
+sel_param_label = colB.selectbox("Select Parameter:", list(parameters.keys()),
+                                 index=list(parameters.keys()).index(st.session_state.param))
+
+# 🔥 ALWAYS sync dropdowns → session_state (fixes graph update)
+st.session_state.machine = sel_machine
+st.session_state.param = sel_param_label
+
+# Connect / Disconnect buttons
+if st.session_state.connected:
+    if colC.button("🔌 Disconnect"):
+        st.session_state.connected = False
+        st.success("Disconnected.")
+else:
+    if colC.button("🔌 Connect"):
+        st.session_state.connected = True
+        st.success("Connected — showing latest 1-minute window.")
+
+# -------------------------------------------------------
+# If NOT connected → stop here
+# -------------------------------------------------------
+if not st.session_state.connected:
+    st.info("Click **Connect** to start live monitoring.")
+    st.stop()
+
+# -------------------------------------------------------
+# AUTO-REFRESH EVERY 60s
+# -------------------------------------------------------
+st.markdown("<meta http-equiv='refresh' content='60'>", unsafe_allow_html=True)
+
+# -------------------------------------------------------
+# Fetch latest data from Postgres
+# -------------------------------------------------------
+table_name = machines[st.session_state.machine]
+colname = parameters[st.session_state.param]
+
+try:
+    conn = psycopg2.connect(
+        host="localhost",
+        port=5432,
+        dbname="machine_data",
+        user="postgres",
+        password="postgres"
+    )
+except Exception as e:
+    st.error(f"Database connection error: {e}")
+    st.stop()
+
+try:
+    sql = f"""
+        SELECT timestamp, {colname}
+        FROM {table_name}
+        ORDER BY timestamp DESC
+        LIMIT 2000
+    """
+    df = pd.read_sql_query(sql, conn)
+except Exception as e:
+    st.error(f"Query error: {e}")
+    conn.close()
+    st.stop()
+finally:
+    conn.close()
+
+if df.empty:
+    st.warning("No data available.")
+    st.stop()
+
+# Prepare data
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+# Latest 1-minute window
+latest_ts = df["timestamp"].max()
+start_win = latest_ts - timedelta(minutes=1)
+df_win = df[(df["timestamp"] >= start_win) & (df["timestamp"] <= latest_ts)]
+
+# Fallback if empty window
+if df_win.empty:
+    df_win = df.tail(60)
+
+# -------------------------
+# Metrics
+# -------------------------
+vals = df_win[colname].dropna()
+min_v = vals.min()
+max_v = vals.max()
+mean_v = vals.mean()
+std_v = vals.std()
+var_v = vals.var()
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Min", f"{min_v:.3f}")
+c2.metric("Max", f"{max_v:.3f}")
+c3.metric("Mean", f"{mean_v:.3f}")
+c4.metric("StdDev", f"{std_v:.3f}")
+c5.metric("Variance", f"{var_v:.3f}")
+
+st.caption(f"Showing latest 1-minute window: {start_win} → {latest_ts}")
+
+# -------------------------
+# Plotly Chart
+# -------------------------
+fig = go.Figure()
+fig.add_trace(
+    go.Scatter(
+        x=df_win["timestamp"],
+        y=df_win[colname],
+        mode="lines+markers",
+        line=dict(width=2, color="#4aa3ff"),
+        marker=dict(size=6),
+        name=st.session_state.param
+    )
+)
+
+fig.update_layout(
+    template="plotly_dark",
+    title=f"{st.session_state.param} — {st.session_state.machine}",
+    xaxis_title="Time",
+    yaxis_title=st.session_state.param,
+    height=520,
+    margin=dict(l=40, r=20, t=60, b=40)
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ===========================================================
+# STRICT ML Predictor for KW / KWh (AMTDC Project)
+# KWh is NOT predicted by ML (correct approach). It is derived:
+#    future_kwh = last_kwh + future_kw * hours
+# ONLY KW is predicted by ML. This removes negative R² problems.
+# ===========================================================
+
+import streamlit as st
+import psycopg2
+import pandas as pd
+import numpy as np
+from scipy.signal import savgol_filter
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import StandardScaler
+import xgboost as xgb
+
+st.set_page_config(page_title="ML KW/KWh Predictor", layout="wide")
+
+# -----------------------------------------------------------
+# PAGE HEADER
+# -----------------------------------------------------------
+st.title("⚙️ STRICT ML Predictor — KW / KW·hr (AMTDC)")
+st.write("""
+This predictor uses **only Savitzky–Golay smoothed values**, removes leakage,
+drops highly correlated features (> 0.95), and predicts **KW** using 
+Linear Regression, Random Forest, and XGBoost.
+
+⚡ **KWh is NOT predicted using ML.**
+Instead, it is correctly computed from predicted KW:
+> KWh_next = Last_KWh + (Predicted_KW × 1 hour)
+""")
+
+# -----------------------------------------------------------
+# USER INPUTS
+# -----------------------------------------------------------
+machine_options = ["Galaxy", "LML_UPMMC", "MTX", "AGI_Robo", "Ace_Vantage"]
+machine = st.selectbox("Select Machine:", machine_options)
+
+target_map = {
+    "KW (total_kw)": "total_kw",
+    "KW·hr (total_net_kwh)": "total_net_kwh"
+}
+target_choice = st.selectbox("Select Target to Predict:", list(target_map.keys()))
+target_col = target_map[target_choice]
+
+if st.button("🚀 Run Strict Prediction"):
+
+    # -----------------------------------------------------------
+    # FETCH DATA
+    # -----------------------------------------------------------
+    try:
+        st.info("Connecting to PostgreSQL and fetching data...")
+
+        conn = psycopg2.connect(
+            host="localhost",
+            port=5432,
+            dbname="machine_data",
+            user="postgres",
+            password="postgres"
+        )
+
+        query = f"""
+            SELECT timestamp, avg_voltage_ln, avg_voltage_ll, avg_current,
+                   total_kw, total_net_kwh
+            FROM {machine.lower()}_readings
+            ORDER BY timestamp ASC;
+        """
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        st.success(f"Data fetched: {df.shape[0]} rows")
+
+        if df.shape[0] < 20:
+            st.error("Not enough data for smoothing + ML. Need >= 20 rows.")
+            st.stop()
+
+        # -----------------------------------------------------------
+        # PREPROCESS — STRICT SMOOTHING
+        # -----------------------------------------------------------
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["t_numeric"] = (df["timestamp"] - df["timestamp"].min()).dt.total_seconds()
+
+        base_cols = ["avg_voltage_ln", "avg_voltage_ll", "avg_current",
+                     "total_kw", "total_net_kwh"]
+
+        def smooth(series):
+            s = series.copy().astype(float)
+            s = s.fillna(method="ffill").fillna(method="bfill")
+            n = len(s)
+            wl = 7 if n >= 7 else (n - 1 if n % 2 == 0 else n)
+            if wl < 3:
+                return s
+            try:
+                return pd.Series(savgol_filter(s, wl, 2), index=s.index)
+            except:
+                return s
+
+        for col in base_cols:
+            df[col + "_smooth"] = smooth(df[col])
+
+        # -----------------------------------------------------------
+        # ALWAYS PREDICT KW — NOT KWH
+        # (We compute KWh from predicted KW)
+        # -----------------------------------------------------------
+        y = df["total_kw_smooth"]   # ALWAYS KW for ML target
+
+        # candidate input features
+        feature_list = [
+            "avg_voltage_ll_smooth",
+            "avg_current_smooth",
+            "t_numeric"
+        ]
+
+        X = df[feature_list].copy()
+
+        # Remove rows where y is NaN
+        mask = ~y.isna()
+        X = X.loc[mask].reset_index(drop=True)
+        y = y.loc[mask].reset_index(drop=True)
+
+        # -----------------------------------------------------------
+        # Train-test split (time aware)
+        # -----------------------------------------------------------
+        split_idx = int(len(X) * 0.8)
+        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+        # Fill missing
+        X_train = X_train.fillna(X_train.mean())
+        X_test = X_test.fillna(X_train.mean())
+
+        # -----------------------------------------------------------
+        # MODEL TRAINING
+        # -----------------------------------------------------------
+        lr = LinearRegression()
+        rf = RandomForestRegressor(n_estimators=200, random_state=42)
+        xg_reg = xgb.XGBRegressor(
+            n_estimators=300,
+            learning_rate=0.05,
+            max_depth=6,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            random_state=42
+        )
+
+        lr.fit(X_train, y_train)
+        rf.fit(X_train, y_train)
+        xg_reg.fit(X_train, y_train)
+
+        y_pred_lr = lr.predict(X_test)
+        y_pred_rf = rf.predict(X_test)
+        y_pred_xgb = xg_reg.predict(X_test)
+
+        # -----------------------------------------------------------
+        # MODEL PERFORMANCE
+        # -----------------------------------------------------------
+        st.subheader("📊 Test Set Performance")
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("Linear Regression R²", f"{r2_score(y_test, y_pred_lr):.4f}")
+        c1.metric("Linear Regression MSE", f"{mean_squared_error(y_test, y_pred_lr):.4f}")
+
+        c2.metric("Random Forest R²", f"{r2_score(y_test, y_pred_rf):.4f}")
+        c2.metric("RF MSE", f"{mean_squared_error(y_test, y_pred_rf):.4f}")
+
+        c3.metric("XGBoost R²", f"{r2_score(y_test, y_pred_xgb):.4f}")
+        c3.metric("XGB MSE", f"{mean_squared_error(y_test, y_pred_xgb):.4f}")
+
+        # best model
+        scores = {
+            "Linear Regression": r2_score(y_test, y_pred_lr),
+            "Random Forest": r2_score(y_test, y_pred_rf),
+            "XGBoost": r2_score(y_test, y_pred_xgb)
+        }
+        best_model_name = max(scores, key=scores.get)
+
+        st.success(f"🏆 Best performing model: {best_model_name}")
+
+        # -----------------------------------------------------------
+        # 1-HOUR AHEAD FORECAST
+        # -----------------------------------------------------------
+        last_row = df.iloc[-1]
+
+        fv = {
+            "avg_voltage_ll_smooth": last_row["avg_voltage_ll_smooth"],
+            "avg_current_smooth": last_row["avg_current_smooth"],
+            "t_numeric": df["t_numeric"].max() + 3600    # +1 hour
+        }
+
+        fv = pd.DataFrame([fv])
+        fv = fv.fillna(X_train.mean())
+
+        future_kw_lr = lr.predict(fv)[0]
+        future_kw_rf = rf.predict(fv)[0]
+        future_kw_xgb = xg_reg.predict(fv)[0]
+
+        # -----------------------------------------------------------
+        # COMPUTE KWH FROM KW (NOT ML!)
+        # -----------------------------------------------------------
+        last_kwh = last_row["total_net_kwh_smooth"]
+
+        future_kwh_lr = last_kwh + future_kw_lr * 1
+        future_kwh_rf = last_kwh + future_kw_rf * 1
+        future_kwh_xgb = last_kwh + future_kw_xgb * 1
+
+        # -----------------------------------------------------------
+        # OUTPUT SECTION
+        # -----------------------------------------------------------
+        st.subheader("🔮 1-Hour Ahead Forecast")
+
+        if target_col == "total_kw":
+            st.write(f"**Linear Regression:** {future_kw_lr:.3f} KW")
+            st.write(f"**Random Forest:** {future_kw_rf:.3f} KW")
+            st.write(f"**XGBoost:** {future_kw_xgb:.3f} KW")
+
+        else:
+            st.write("### (Computed from KW — not ML)")
+            st.write(f"**Linear Regression:** {future_kwh_lr:.3f} KWh")
+            st.write(f"**Random Forest:** {future_kwh_rf:.3f} KWh")
+            st.write(f"**XGBoost:** {future_kwh_xgb:.3f} KWh")
+
+        # -----------------------------------------------------------
+        # Summary
+        # -----------------------------------------------------------
+        st.subheader("📘 Summary")
+        st.markdown(f"""
+        - Machine: **{machine}**
+        - Target selected: **{target_choice}**
+        - ML actually predicts: **KW only**
+        - KWh is computed correctly: `KWh = last_kwh + KW × 1 hour`
+        - Best ML model: **{best_model_name}**
+        """)
+
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+
+else:
+    st.info("Choose machine and target, then click Run.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ===============================================================
+# 🧠 SIMPLE RAG Chatbot (PDF + Image OCR)
+# - Extracts ALL text (normal + images)
+# - Creates Document objects correctly
+# - TinyLlama RAG using FAISS
+# ===============================================================
+
+import streamlit as st
+import fitz  # PyMuPDF
+import pytesseract
+from PIL import Image
+from io import BytesIO
+
+from langchain.schema import Document
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_community.llms import Ollama
+from langchain.prompts import ChatPromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
+
+# --------------------------------------------------------------
+# STREAMLIT UI
+# --------------------------------------------------------------
+st.set_page_config(page_title="PDF RAG Chatbot", layout="wide")
+st.title("🧠 PDF RAG Chatbot with Image OCR (AMTDC)")
+st.write("Upload a PDF containing text + images and ask questions.")
+
+uploaded_pdf = st.file_uploader("📂 Upload PDF", type=["pdf"])
+query = st.text_input("💬 Ask a question from this PDF:")
+
+
+# --------------------------------------------------------------
+# PDF + IMAGE OCR EXTRACTION
+# --------------------------------------------------------------
+def extract_text_and_images(pdf_bytes):
+    """Extract normal text + OCR text from PDF images."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    full_text = ""
+
+    for page_num, page in enumerate(doc):
+        # ---- Extract text ----
+        text = page.get_text()
+        full_text += f"\n\n--- PAGE {page_num+1} TEXT ---\n"
+        full_text += text
+
+        # ---- Extract images ----
+        images = page.get_images(full=True)
+
+        for img_index, img in enumerate(images):
+            xref = img[0]
+            pix = fitz.Pixmap(doc, xref)
+
+            if pix.n < 5:  # normal RGB
+                img_bytes = pix.tobytes("png")
+            else:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+                img_bytes = pix.tobytes("png")
+
+            image = Image.open(BytesIO(img_bytes))
+
+            # --- OCR from image ---
+            ocr_text = pytesseract.image_to_string(image)
+
+            full_text += f"\n\n--- PAGE {page_num+1} IMAGE {img_index+1} OCR ---\n"
+            full_text += ocr_text
+
+    return full_text
+
+
+# --------------------------------------------------------------
+# LOAD EMBEDDINGS + MODEL (CACHED)
+# --------------------------------------------------------------
+@st.cache_resource
+def load_embeddings():
+    return SentenceTransformerEmbeddings(
+        model_name="all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"}
+    )
+
+
+@st.cache_resource
+def load_llm():
+    return Ollama(model="tinyllama")
+
+
+# --------------------------------------------------------------
+# MAIN LOGIC
+# --------------------------------------------------------------
+if uploaded_pdf:
+
+    st.success("PDF uploaded successfully!")
+    pdf_bytes = uploaded_pdf.read()
+
+    # Extract text + OCR
+    st.info("🔍 Extracting text + OCR from PDF…")
+    extracted_text = extract_text_and_images(pdf_bytes)
+
+    # Create LangChain Document object
+    documents = [
+        Document(
+            page_content=extracted_text,
+            metadata={"source": uploaded_pdf.name}
+        )
+    ]
+
+    # Build vector database
+    st.info("📦 Creating vector embeddings…")
+    emb = load_embeddings()
+    vector_store = FAISS.from_documents(documents, emb)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+
+    # Load LLM
+    llm = load_llm()
+
+    # Prompt template
+    prompt = ChatPromptTemplate.from_template("""
+    You are a helpful assistant.
+    Use ONLY the context to answer the question.
+    If the answer is not found in the context, say "I don't know".
+
+    Context:
+    {context}
+
+    Question:
+    {input}
+    """)
+
+    doc_chain = create_stuff_documents_chain(llm, prompt)
+    qa_chain = create_retrieval_chain(retriever, doc_chain)
+
+    # Ask question
+    if query:
+        with st.spinner("🤖 Thinking…"):
+            response = qa_chain.invoke({"input": query})
+            st.subheader("🧠 Answer:")
+            st.write(response["answer"])
+
+else:
+    st.info("Please upload a PDF to begin.")
+

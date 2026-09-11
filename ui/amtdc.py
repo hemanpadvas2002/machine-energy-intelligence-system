@@ -481,12 +481,12 @@ def inject_styles() -> None:
 
         /* --- PROPORTIONAL INPUT STRUCTURING --- */
         [data-testid="stSelectbox"] {
-            max-width: 300px !important;
+            max-width: 220px !important;
         }
 
         [data-testid="stDateInput"], 
         [data-testid="stTimeInput"] {
-            max-width: 220px !important;
+            max-width: 160px !important;
         }
         
         [data-testid="stHorizontalBlock"] > div[data-testid="column"] > div > [data-testid="stSelectbox"],

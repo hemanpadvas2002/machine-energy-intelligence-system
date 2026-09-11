@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.db
 *.log
+certs/*.key
+certs/*.crt
+certs/*.pem

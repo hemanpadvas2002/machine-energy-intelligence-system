@@ -2,10 +2,11 @@ import socket
 import subprocess
 import sys
 import time
-from functools import lru_cache
 from pathlib import Path
 
-from services.telemetry_stream import STREAM_HOST, STREAM_PORT
+from services.telemetry_stream import STREAM_PORT, start_telemetry_stream_server
+
+HEALTH_CHECK_HOST = "127.0.0.1"
 
 
 def _is_port_open(host: str, port: int) -> bool:
@@ -14,21 +15,29 @@ def _is_port_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-@lru_cache(maxsize=1)
 def ensure_telemetry_server_process():
-    if _is_port_open(STREAM_HOST, STREAM_PORT):
+    if _is_port_open(HEALTH_CHECK_HOST, STREAM_PORT):
         return True
 
-    subprocess.Popen(
-        [sys.executable, "-m", "services.telemetry_stream"],
-        cwd=str(Path(__file__).resolve().parents[1]),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "services.telemetry_stream"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
+        for _ in range(20):
+            if _is_port_open(HEALTH_CHECK_HOST, STREAM_PORT):
+                return True
+            time.sleep(0.3)
+    except Exception:
+        pass
+
+    start_telemetry_stream_server()
     for _ in range(20):
-        if _is_port_open(STREAM_HOST, STREAM_PORT):
+        if _is_port_open(HEALTH_CHECK_HOST, STREAM_PORT):
             return True
         time.sleep(0.3)
     return False

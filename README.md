@@ -71,6 +71,98 @@ Work in progress — actively being developed and expanded.
 
 ---
 
+## LAN HTTPS hosting
+
+This project is a Streamlit portal with a Python telemetry API, so the LAN setup maps the usual frontend/backend checklist to:
+
+* Portal: `https://<server-ip>:8501/Live_Data`
+* Telemetry API: `https://<server-ip>:8765/api/telemetry/dashboard`
+* PM2 process: `digital-transformation-portal`
+
+### Setup steps
+
+1. Verify the server tools:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_lan_https_prereqs.ps1
+   ```
+
+2. Install PM2 if it is missing:
+
+   ```powershell
+   npm install -g pm2
+   ```
+
+3. Generate or refresh the self-signed LAN certificate:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\create_streamlit_https_cert.ps1
+   ```
+
+4. If Windows Firewall blocks access from another computer, run PowerShell as Administrator and allow LAN-only access to ports `8501` and `8765`:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable_streamlit_firewall.ps1
+   ```
+
+5. Start with PM2:
+
+   ```powershell
+   pm2 start ecosystem.config.js
+   pm2 save
+   ```
+
+6. Reload safely after code changes:
+
+   ```powershell
+   pm2 reload digital-transformation-portal
+   ```
+
+7. Open from another computer on the same Wi-Fi:
+
+   ```text
+   https://192.168.1.37:8501/Live_Data
+   ```
+
+### Config snippets
+
+Streamlit HTTPS is configured in `.streamlit/config.toml`:
+
+```toml
+[server]
+address = "0.0.0.0"
+port = 8501
+sslCertFile = "certs/server.crt"
+sslKeyFile = "certs/server.key"
+```
+
+PM2 starts the existing Python entrypoint without changing the app framework:
+
+```javascript
+module.exports = {
+  apps: [
+    {
+      name: "digital-transformation-portal",
+      script: "launch.py",
+      interpreter: "python",
+    },
+  ],
+};
+```
+
+### Security checks
+
+* HTTPS is enforced on the portal and telemetry API; plain HTTP connections on those ports are rejected.
+* TLS 1.3 is enforced for the telemetry API, and the portal negotiates TLS 1.3 with modern clients.
+* The generated certificate includes `localhost`, `127.0.0.1`, the computer name, and the LAN IPv4 address as certificate SANs.
+* `certs/server.key` is private. Do not share it.
+* Share only `certs/server.crt` with client devices. Import it into Trusted Root Certification Authorities to avoid browser warnings.
+* Firewall rules are restricted to the Private network profile and `LocalSubnet`.
+
+If this computer gets a different Wi-Fi IP address later, rerun `scripts\create_streamlit_https_cert.ps1`, restart PM2, and use the new URL printed by the script.
+
+---
+
 ## Vision
 
 To build a system where energy is not just consumed, but understood, optimised, and predicted.

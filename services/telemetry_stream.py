@@ -1,13 +1,17 @@
 import json
 import logging
+import os
+import ssl
 import threading
+import time
 from collections import Counter
 from datetime import datetime
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from config.settings import MACHINE_TABLE_MAPPING
+from config.settings import ACTIVE_MACHINE_NAMES, MACHINE_TABLE_MAPPING
 from services.matlab_analytics import get_matlab_analytics_service
 from utils.db_handler import (
     fetch_incremental_points_from_postgres,
@@ -18,10 +22,17 @@ from utils.db_handler import (
 
 logger = logging.getLogger(__name__)
 
-STREAM_HOST = "127.0.0.1"
+STREAM_HOST = os.getenv("AMTDC_STREAM_HOST", "0.0.0.0")
 STREAM_PORT = 8765
 WINDOW_SIZE = 60
 MODE_LIMIT = 5
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CERT_FILE = PROJECT_ROOT / "certs" / "server.crt"
+KEY_FILE = PROJECT_ROOT / "certs" / "server.key"
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_REQUESTS = 240
+_rate_limit_lock = threading.Lock()
+_rate_limit_hits = {}
 
 PARAMETER_FIELDS = {
     "avg_voltage_ln": "avg_voltage_ln",
@@ -32,6 +43,7 @@ PARAMETER_FIELDS = {
 }
 
 MODE_TONES = ["#0b7171", "#1f8d8d", "#4b6e90", "#a47400", "#cf2e2e"]
+TELEMETRY_COLUMNS = ["avg_voltage_ln", "avg_voltage_ll", "avg_current", "total_kw", "total_net_kwh"]
 
 
 def _serialize_point(row, parameter):
@@ -58,13 +70,28 @@ def _compute_modes(points):
     return modes
 
 
+def _filter_valid_meter_rows(df):
+    """Drop rows that are synthetic/offline all-zero packets."""
+    if df.empty:
+        return df
+    available_columns = [column for column in TELEMETRY_COLUMNS if column in df.columns]
+    if not available_columns:
+        return df
+    numeric = df[available_columns].fillna(0).astype(float).abs()
+    return df[numeric.sum(axis=1) > 0].copy()
+
+
 def build_dashboard_payload(machine, parameter="total_kw", since=None):
     table = MACHINE_TABLE_MAPPING.get(machine)
     if not table:
         return {"error": f"Unknown machine: {machine}"}, 404
 
     parameter = PARAMETER_FIELDS.get(parameter, "total_kw")
-    latest_rows = fetch_latest_machine_snapshots()
+    latest_rows = {
+        machine: row
+        for machine, row in fetch_latest_machine_snapshots().items()
+        if machine in ACTIVE_MACHINE_NAMES
+    }
     kpi_rows = list(latest_rows.values())
     kw_values = [float(row.get("total_kw") or 0.0) for row in kpi_rows]
     total_energy = sum(float(row.get("total_net_kwh") or 0.0) for row in kpi_rows)
@@ -72,7 +99,9 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
     if since:
         series_df = fetch_incremental_points_from_postgres(table, since)
     else:
-        series_df = fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE)
+        series_df = fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE * 10)
+
+    series_df = series_df.tail(WINDOW_SIZE)
 
     series = []
     if not series_df.empty:
@@ -81,7 +110,7 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
             for row in series_df[["timestamp", parameter]].to_dict(orient="records")
         ]
 
-    window_df = fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE)
+    window_df = fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE * 10).tail(WINDOW_SIZE)
     window_series = []
     if not window_df.empty:
         window_series = [
@@ -96,7 +125,7 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
             {
                 "machine": machine_name,
                 "load_kw": load_kw,
-                "state": "Optimal" if load_kw > 0 else "Idle",
+                "state": "Optimal" if abs(load_kw) > 0.01 else "Idle",
                 "last_sync": row["timestamp"].isoformat(),
             }
         )
@@ -111,9 +140,9 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
         "kpis": {
             "total_energy": round(total_energy, 2),
             "active_machines": len(latest_rows),
-            "machine_count": len(MACHINE_TABLE_MAPPING),
+            "machine_count": len(ACTIVE_MACHINE_NAMES),
             "average_load": round(sum(kw_values) / len(kw_values), 2) if kw_values else 0.0,
-            "peak_demand": round(max(kw_values), 2) if kw_values else 0.0,
+            "peak_demand": round(max((abs(value) for value in kw_values), default=0.0), 2),
         },
         "machines": latest_machine_rows,
         "modes": _compute_modes(window_series),
@@ -128,7 +157,7 @@ def _build_series(machine, parameter="total_kw", window_size=WINDOW_SIZE):
         return None, {"error": f"Unknown machine: {machine}"}, 404
 
     parameter = PARAMETER_FIELDS.get(parameter, "total_kw")
-    window_df = fetch_recent_points_from_postgres(table, limit=window_size)
+    window_df = fetch_recent_points_from_postgres(table, limit=window_size * 10).tail(window_size)
     if window_df.empty:
         payload = {
             "machine": machine,
@@ -141,6 +170,7 @@ def _build_series(machine, parameter="total_kw", window_size=WINDOW_SIZE):
             "fft": [],
             "engine": "empty",
             "zero_only_signal": False,
+            "no_valid_telemetry": True,
             "generated_at": datetime.utcnow().isoformat(),
         }
         return [], payload, 200
@@ -160,6 +190,7 @@ def _build_series(machine, parameter="total_kw", window_size=WINDOW_SIZE):
         "parameter": parameter,
         "generated_at": datetime.utcnow().isoformat(),
         "zero_only_signal": bool(values) and all(value == 0.0 for value in values),
+        "no_valid_telemetry": False,
         **result.to_dict(),
     }
     return values, payload, 200
@@ -208,16 +239,45 @@ def build_timeseries_payload(machine, parameter="total_kw", window_size=WINDOW_S
 
 
 class TelemetryRequestHandler(BaseHTTPRequestHandler):
+    def _is_rate_limited(self):
+        client_ip = self.client_address[0]
+        now = time.monotonic()
+        window_start = now - RATE_LIMIT_WINDOW_SECONDS
+
+        with _rate_limit_lock:
+            hits = [hit for hit in _rate_limit_hits.get(client_ip, []) if hit >= window_start]
+            hits.append(now)
+            _rate_limit_hits[client_ip] = hits
+            return len(hits) > RATE_LIMIT_REQUESTS
+
+    def _send_security_headers(self, body_length):
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(body_length))
+        self.send_header("Strict-Transport-Security", "max-age=31536000")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+
+        origin = self.headers.get("Origin", "")
+        if origin and origin != "null":
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        else:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_security_headers(len(body))
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):
+        if self._is_rate_limited():
+            self._send_json({"error": "Too many requests"}, 429)
+            return
+
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
         machine = params.get("machine", [next(iter(MACHINE_TABLE_MAPPING.keys()))])[0]
@@ -239,14 +299,38 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json(payload, status)
 
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._send_security_headers(0)
+        self.end_headers()
+
     def log_message(self, format, *args):
         logger.debug("Telemetry stream: " + format, *args)
+
+
+def _build_tls_context():
+    if not CERT_FILE.exists() or not KEY_FILE.exists():
+        raise FileNotFoundError(
+            f"HTTPS certificate files are missing. Expected {CERT_FILE} and {KEY_FILE}."
+        )
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
+    context.options |= getattr(ssl, "OP_NO_COMPRESSION", 0)
+    context.minimum_version = getattr(ssl.TLSVersion, "TLSv1_3", ssl.TLSVersion.TLSv1_2)
+    return context
+
+
+def _create_https_server():
+    server = ThreadingHTTPServer((STREAM_HOST, STREAM_PORT), TelemetryRequestHandler)
+    server.socket = _build_tls_context().wrap_socket(server.socket, server_side=True)
+    return server
 
 
 @lru_cache(maxsize=1)
 def start_telemetry_stream_server():
     try:
-        server = ThreadingHTTPServer((STREAM_HOST, STREAM_PORT), TelemetryRequestHandler)
+        server = _create_https_server()
     except OSError:
         logger.info("Telemetry stream server already active on %s:%s", STREAM_HOST, STREAM_PORT)
         return None
@@ -257,7 +341,7 @@ def start_telemetry_stream_server():
 
 
 def run_telemetry_stream_server_forever():
-    server = ThreadingHTTPServer((STREAM_HOST, STREAM_PORT), TelemetryRequestHandler)
+    server = _create_https_server()
     server.serve_forever()
 
 

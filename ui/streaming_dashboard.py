@@ -1,10 +1,15 @@
-from config.settings import MACHINE_TABLE_MAPPING
+from config.settings import DEVICES
 
 
-def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view_mode: str = "dashboard") -> str:
+def build_streaming_dashboard_html(
+    default_machine: str,
+    fallback_host: str,
+    api_port: int,
+    view_mode: str = "dashboard",
+) -> str:
     machine_options = "".join(
         f'<option value="{machine}" {"selected" if machine == default_machine else ""}>{machine}</option>'
-        for machine in MACHINE_TABLE_MAPPING.keys()
+        for machine in [device["name"] for device in DEVICES]
     )
     live_kpi_markup = """
         <section class="kpi-grid">
@@ -225,11 +230,15 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
         .warning {{
           margin-top: 16px;
           border-radius: 12px;
-          padding: 14px 16px;
-          background: rgba(164, 116, 0, 0.12);
-          color: #805b00;
-          font-weight: 600;
+          padding: 14px 18px;
+          background: rgba(100, 116, 139, 0.1);
+          backdrop-filter: blur(4px);
+          color: #475569;
+          font-weight: 500;
           display: none;
+          border-left: 5px solid #64748b;
+          font-size: 13.5px;
+          line-height: 1.5;
         }}
         .status-table {{
           width: 100%;
@@ -273,9 +282,9 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
           <div class="control-group">
             <select id="machineSelect" class="control-select">{machine_options}</select>
             <select id="parameterSelect" class="control-select">
-              <option value="total_kw" selected>Total KW</option>
+              <option value="avg_voltage_ln" selected>Avg Voltage LN</option>
               <option value="avg_current">Avg Current</option>
-              <option value="avg_voltage_ln">Avg Voltage LN</option>
+              <option value="total_kw">Total KW</option>
               <option value="avg_voltage_ll">Avg Voltage LL</option>
               <option value="total_net_kwh">Total Net KWh</option>
             </select>
@@ -320,10 +329,23 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
       <script>
         Chart.register(window['chartjs-plugin-annotation']);
 
-        const apiBaseUrl = "{api_base_url}";
+        function resolveApiBaseUrl() {{
+          const fallbackHost = "{fallback_host}";
+          const apiPort = "{api_port}";
+          let parentUrl = null;
+          try {{
+            parentUrl = new URL(document.referrer || window.location.href);
+          }} catch (error) {{
+            parentUrl = null;
+          }}
+          const host = parentUrl && parentUrl.hostname ? parentUrl.hostname : fallbackHost;
+          return `https://${{host}}:${{apiPort}}`;
+        }}
+
+        const apiBaseUrl = resolveApiBaseUrl();
         const state = {{
           machine: "{default_machine}",
-          parameter: "total_kw",
+          parameter: "avg_voltage_ln",
           viewMode: "{view_mode}",
           variant: "all",
           chart: null,
@@ -475,7 +497,7 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
           el.textContent = engine === 'matlab' ? 'MATLAB Engine' : engine === 'scipy-fallback' ? 'SciPy Fallback' : 'Analytics Engine';
         }}
 
-        function updateModes(modes, zeroOnlySignal) {{
+        function updateModes(modes, zeroOnlySignal, noValidTelemetry) {{
           const list = document.getElementById('modeList');
           list.innerHTML = '';
           if (!modes.length) {{
@@ -484,7 +506,9 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
             note.style.display = 'block';
             note.style.marginTop = '8px';
             note.textContent = zeroOnlySignal
-              ? 'Only zero telemetry is available right now, so no valid MOD values can be computed.'
+              ? 'Machine is currently idle or offline. Values are 0.0 — MOD units will appear when live telemetry resumes.'
+              : noValidTelemetry
+                ? 'Waiting for telemetry data from this machine.'
               : 'No mode values available for the selected range.';
             list.appendChild(note);
             return;
@@ -521,11 +545,14 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
           }});
         }}
 
-        function renderWarning(zeroOnlySignal) {{
+        function renderWarning(payload) {{
           const warning = document.getElementById('zeroWarning');
-          if (zeroOnlySignal) {{
+          if (payload.no_valid_telemetry) {{
             warning.style.display = 'block';
-            warning.textContent = `${{state.machine}} is currently returning only 0.0 values for ${{state.parameter}}. MATLAB analytics will become meaningful once non-zero telemetry arrives.`;
+            warning.textContent = `Waiting for telemetry from ${{state.machine}}. The machine may be starting up or not yet connected.`;
+          }} else if (payload.zero_only_signal) {{
+            warning.style.display = 'block';
+            warning.textContent = `${{state.machine}} is currently idle or offline for ${{state.parameter}}. The timeline is maintained with 0.0 values.`;
           }} else {{
             warning.style.display = 'none';
             warning.textContent = '';
@@ -538,8 +565,15 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
           const localMax = Math.max(...allValues);
           const span = Math.max(localMax - localMin, 0.05);
           const padding = Math.max(span * 0.18, 0.02);
-          const targetMin = Math.max(0, localMin - padding);
-          const targetMax = localMax + padding;
+          let targetMin = localMin - padding;
+          let targetMax = localMax + padding;
+
+          if (localMin >= 0 && localMax <= padding) {{
+            targetMin = 0;
+          }}
+          if (localMax <= 0 && localMin >= -padding) {{
+            targetMax = 0;
+          }}
 
           if (state.yMin === null || state.yMax === null) {{
             state.yMin = targetMin;
@@ -550,7 +584,9 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
           }}
 
           if (state.yMax - state.yMin < 0.05) {{
-            state.yMax = state.yMin + 0.05;
+            const center = (state.yMax + state.yMin) / 2;
+            state.yMin = center - 0.025;
+            state.yMax = center + 0.025;
           }}
 
           state.chart.options.scales.y.min = Number(state.yMin.toFixed(2));
@@ -609,8 +645,8 @@ def build_streaming_dashboard_html(default_machine: str, api_base_url: str, view
           smoothAxis([...(payload.values || []), ...(payload.filtered || []), ...(payload.smoothed || []), ...((payload.modes || []).map(mode => Number(mode.value || 0)))]);
           updateRealtimeKpis(payload);
           state.chart.update('active');
-          updateModes(payload.modes || [], payload.zero_only_signal);
-          renderWarning(payload.zero_only_signal);
+          updateModes(payload.modes || [], payload.zero_only_signal, payload.no_valid_telemetry);
+          renderWarning(payload);
           updateEngine(payload.engine);
           setVariant(state.variant);
         }}

@@ -11,14 +11,20 @@ SQLITE_DB = "machine_data.db"
 
 # Device Configuration
 DEVICES = [
-    {"name": "Galaxy_CNC",         "host": "192.168.1.182", "port": 522},
-    {"name": "MTX_CNC",            "host": "192.168.1.184", "port": 524},
     {
-        "name": "LML_GRINDMASTER_CNC",
-        "host": "192.168.1.185",
-        "port": 525,
+        "name": "Galaxy_CNC",
+        "host": "169.254.92.218",
+        "port": 520,
+        # Direct laptop<->converter link: converter self-assigned an APIPA
+        # (169.254.x.x) address. Laptop must also be on 169.254.x.x / 255.255.0.0.
+        # Known-good port only, to avoid hammering the single-slot gateway.
+        "candidate_ports": [520],
         "timeout": 5,
         "read_retries": 3,
+        "skip_invalid_packets": True,
+        # Connection to 520 works; reads were failing on the single default
+        # profile. Try the full matrix so the right register type / slave id /
+        # word order is auto-discovered.
         "probe_profiles": [
             {"register_type": "input", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
             {"register_type": "holding", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
@@ -32,9 +38,41 @@ DEVICES = [
             {"register_type": "holding", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 1},
         ],
     },
-    {"name": "AGI_ROBO_CNC",       "host": "192.168.1.186", "port": 526},
-    {"name": "Ace_Vantage_CNC",    "host": "192.168.1.183", "port": 523},
+    {
+        "name": "LML_GRINDMASTER_CNC",
+        "host": "192.168.1.184",
+        "port": 524,
+        "candidate_ports": [524],
+        "timeout": 5,
+        "read_retries": 3,
+        "skip_invalid_packets": True,
+        "probe_profiles": [
+            {"register_type": "input", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
+            {"register_type": "holding", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
+            {"register_type": "input", "slave_id": 2, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
+            {"register_type": "holding", "slave_id": 2, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
+            {"register_type": "input", "slave_id": 247, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
+            {"register_type": "holding", "slave_id": 247, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 0},
+            {"register_type": "input", "slave_id": 1, "byteorder": "BIG", "wordorder": "BIG", "address_offset": 0},
+            {"register_type": "holding", "slave_id": 1, "byteorder": "BIG", "wordorder": "BIG", "address_offset": 0},
+            {"register_type": "input", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 1},
+            {"register_type": "holding", "slave_id": 1, "byteorder": "BIG", "wordorder": "LITTLE", "address_offset": 1},
+        ],
+    },
+    {
+        "name": "AGI_ROBO_CNC",
+        "host": "192.168.1.186",
+        "port": 526,
+        "candidate_ports": [526],
+    },
+    {
+        "name": "Ace_Vantage_CNC",
+        "host": "192.168.1.183",
+        "port": 523,
+        "candidate_ports": [523],
+    },
 ]
+ACTIVE_MACHINE_NAMES = {device["name"] for device in DEVICES}
 
 # Modbus and Polling Settings
 REGISTER_MAPPING = {
@@ -65,3 +103,5 @@ SLAVE_ID = 1
 SLEEP_INTERVAL = 1
 CONNECT_TIMEOUT = 3
 MAX_RETRY_WAIT = 60
+HANDSHAKE_INTERVAL_SECONDS = 15
+PORT_PROBE_INTERVAL_SECONDS = 30

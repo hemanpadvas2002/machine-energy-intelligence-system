@@ -7,7 +7,7 @@ import streamlit.components.v1 as components
 from config.settings import MACHINE_TABLE_MAPPING
 from services.matlab_analytics import get_matlab_analytics_service
 from ui.amtdc import apply_page_config, close_shell, inject_styles, render_shell, render_sidebar
-from utils.db_handler import fetch_data_from_postgres
+from utils.db_handler import fetch_data_by_date_range, fetch_timestamp_range
 
 
 apply_page_config("AMTDC Past Data")
@@ -25,6 +25,7 @@ METRIC_OPTIONS = {
 }
 
 MODE_TONES = ["#0b7171", "#1191a0", "#4b6e90", "#a47400", "#cf2e2e"]
+TELEMETRY_COLUMNS = ["avg_voltage_ln", "avg_voltage_ll", "avg_current", "total_kw", "total_net_kwh"]
 
 
 def render_metric_card(label: str, value: str) -> None:
@@ -56,6 +57,17 @@ def compute_modes(values: list[float]) -> list[dict]:
             }
         )
     return modes
+
+
+def filter_valid_meter_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop synthetic/offline all-zero packets from historical graphs."""
+    if df.empty:
+        return df
+    available_columns = [column for column in TELEMETRY_COLUMNS if column in df.columns]
+    if not available_columns:
+        return df
+    numeric = df[available_columns].fillna(0).astype(float).abs()
+    return df[numeric.sum(axis=1) > 0].copy()
 
 
 def build_historical_dashboard_html(metric_title: str, unit: str, engine: str, payload: dict) -> str:
@@ -195,10 +207,11 @@ def build_historical_dashboard_html(metric_title: str, unit: str, engine: str, p
           margin-top: 16px;
           border-radius: 12px;
           padding: 14px 16px;
-          background: rgba(164, 116, 0, 0.12);
-          color: #805b00;
+          background: rgba(127, 144, 163, 0.08);
+          color: #526273;
           font-weight: 600;
           display: none;
+          border-left: 4px solid #7f90a3;
         }}
         @media (max-width: 900px) {{
           .main-grid {{ grid-template-columns: 1fr; }}
@@ -427,12 +440,13 @@ def build_historical_dashboard_html(metric_title: str, unit: str, engine: str, p
         document.querySelectorAll('.variant-pill').forEach((button) => {{
           button.addEventListener('click', () => setVariant(button.dataset.variant));
         }});
-
-        document.getElementById('zeroWarning').style.display = payload.zero_only_signal ? 'block' : 'none';
-        document.getElementById('zeroWarning').textContent = payload.zero_only_signal
-          ? 'Only zero telemetry is available in this historical range, so the MATLAB trace is flat.'
-          : '';
-
+        const warningElement = document.getElementById('zeroWarning');
+        warningElement.style.display = payload.zero_only_signal ? 'block' : 'none';
+        if (payload.zero_only_signal) {{
+            warningElement.textContent = 'Signal is currently flat (0.0). Valid mode analytics require dynamic telemetry.';
+        }} else {{
+            warningElement.textContent = '';
+        }}
         renderCharts();
         setVariant('all');
       </script>
@@ -441,36 +455,38 @@ def build_historical_dashboard_html(metric_title: str, unit: str, engine: str, p
     """
 
 
-selector_cols = st.columns(2)
-with selector_cols[0]:
+ctrl_cols = st.columns([1.5, 1.5, 1.2, 1.2, 2.6])
+with ctrl_cols[0]:
     machine = st.selectbox("Select Machine", list(MACHINE_TABLE_MAPPING.keys()), index=0)
-with selector_cols[1]:
+with ctrl_cols[1]:
     metric_label = st.selectbox("Select Data View", list(METRIC_OPTIONS.keys()), index=0)
+
+# Fetch min/max dates for defaults efficiently
+min_ts, max_ts = fetch_timestamp_range(MACHINE_TABLE_MAPPING[machine])
+default_start = min_ts.date() if (min_ts and not pd.isna(min_ts)) else pd.Timestamp.now().date()
+default_end = max_ts.date() if (max_ts and not pd.isna(max_ts)) else pd.Timestamp.now().date()
+
+with ctrl_cols[2]:
+    start_date = st.date_input("From Date", value=default_start)
+
+with ctrl_cols[3]:
+    end_date = st.date_input("To Date", value=default_end)
 
 metric_config = METRIC_OPTIONS[metric_label]
 metric_column = metric_config["column"]
 metric_unit = metric_config["unit"]
 
-df = fetch_data_from_postgres(MACHINE_TABLE_MAPPING[machine])
+df = fetch_data_by_date_range(MACHINE_TABLE_MAPPING[machine], start_date, end_date)
 
 if df.empty:
-    st.warning(f"No PostgreSQL data is available for {machine}.")
+    st.warning(f"No historical telemetry found for {machine} within the selected date range.")
     close_shell()
     st.stop()
 
-date_cols = st.columns(2)
-with date_cols[0]:
-    start_date = st.date_input("From Date", value=df["timestamp"].min().date())
-with date_cols[1]:
-    end_date = st.date_input("To Date", value=df["timestamp"].max().date())
-
-filtered_df = df[
-    (df["timestamp"].dt.date >= start_date)
-    & (df["timestamp"].dt.date <= end_date)
-].copy()
+filtered_df = filter_valid_meter_rows(df)
 
 if filtered_df.empty:
-    st.warning("No data found for the selected timeline.")
+    st.warning("No valid meter packets found for the selected timeline. All-zero/offline packets are ignored.")
     close_shell()
     st.stop()
 
@@ -490,6 +506,27 @@ result = get_matlab_analytics_service().process_series(
     sample_interval=1.0,
     cache_key=("historical", machine, metric_column, timestamps[-1] if timestamps else "empty", len(values)),
 )
+
+# Downsample for visualization if dataset is too large (prevents browser/component crashes)
+MAX_VISUAL_POINTS = 3000
+visual_timestamps = result.timestamps
+visual_raw = result.raw
+visual_filtered = result.filtered
+visual_smoothed = result.smoothed
+
+if len(visual_raw) > MAX_VISUAL_POINTS:
+    step = len(visual_raw) // MAX_VISUAL_POINTS
+    visual_timestamps = visual_timestamps[::step][:MAX_VISUAL_POINTS]
+    visual_raw = visual_raw[::step][:MAX_VISUAL_POINTS]
+    visual_filtered = visual_filtered[::step][:MAX_VISUAL_POINTS]
+    visual_smoothed = visual_smoothed[::step][:MAX_VISUAL_POINTS]
+
+visual_fft_frequency = result.fft_frequency
+visual_fft_magnitude = result.fft_magnitude
+if len(visual_fft_magnitude) > MAX_VISUAL_POINTS:
+    fft_step = len(visual_fft_magnitude) // MAX_VISUAL_POINTS
+    visual_fft_frequency = visual_fft_frequency[::fft_step][:MAX_VISUAL_POINTS]
+    visual_fft_magnitude = visual_fft_magnitude[::fft_step][:MAX_VISUAL_POINTS]
 
 modes = compute_modes(result.filtered or result.raw)
 zero_only_signal = bool(values) and all(abs(float(value)) < 1e-9 for value in values)
@@ -514,21 +551,22 @@ components.html(
         unit=metric_unit,
         engine=result.engine,
         payload={
-            "timestamps": result.timestamps,
-            "values": result.raw,
-            "filtered": result.filtered,
-            "smoothed": result.smoothed,
-            "fft_frequency": result.fft_frequency,
-            "fft": result.fft_magnitude,
+            "timestamps": visual_timestamps,
+            "values": visual_raw,
+            "filtered": visual_filtered,
+            "smoothed": visual_smoothed,
+            "fft_frequency": visual_fft_frequency,
+            "fft": visual_fft_magnitude,
             "modes": modes,
             "zero_only_signal": zero_only_signal,
         },
     ),
     height=760,
-        scrolling=False,
+    scrolling=False,
 )
 
 table_df = filtered_df.tail(50).copy()
+
 table_df["timestamp"] = table_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
 st.dataframe(table_df, use_container_width=True, hide_index=True)
 

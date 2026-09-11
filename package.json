@@ -1,0 +1,12 @@
+{
+  "name": "digital-transformation-portal",
+  "private": true,
+  "scripts": {
+    "check:https-prereqs": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check_lan_https_prereqs.ps1",
+    "cert:lan": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/create_streamlit_https_cert.ps1",
+    "cert:trust": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/trust_lan_https_cert_current_user.ps1",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:reload": "pm2 reload digital-transformation-portal",
+    "pm2:save": "pm2 save"
+  }
+}

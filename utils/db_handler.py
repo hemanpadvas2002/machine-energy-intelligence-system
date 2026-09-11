@@ -45,19 +45,52 @@ def get_sqlite_conn():
     """Returns a connection to the SQLite database."""
     return sqlite3.connect(SQLITE_DB)
 
+def sanitize_sqlite_table_name(name):
+    mapping = {
+        "Galaxy_CNC":          "galaxy_readings",
+        "MTX_CNC":             "mtx_readings",
+        "LML_GRINDMASTER_CNC": "lml_upmmc_readings",
+        "AGI_ROBO_CNC":        "agi_robo_readings",
+        "Ace_Vantage_CNC":     "ace_vantage_readings",
+    }
+    return mapping.get(name, name.lower().replace(" ", "_") + "_readings")
+
 def init_postgres_db():
     """Ensures all configured PostgreSQL machine tables exist."""
-    conn = get_postgres_conn()
-    cursor = conn.cursor()
+    conn = None
     try:
+        conn = get_postgres_conn()
+        cursor = conn.cursor()
         for table in MACHINE_TABLE_MAPPING.values():
             cursor.execute(
                 f"CREATE TABLE IF NOT EXISTS {table} ({POSTGRES_MACHINE_TABLE_SCHEMA})"
             )
         conn.commit()
+    except Exception as e:
+        logger.warning(f"PostgreSQL init skipped: {e}")
     finally:
+        if conn:
+            conn.close()
+
+def fetch_timestamp_range(table):
+    """Fetches the min and max timestamp from a specific PostgreSQL table."""
+    conn = None
+    try:
+        conn = _get_postgres_conn_with_retry()
+        cursor = conn.cursor()
+        query = f"SELECT MIN(timestamp), MAX(timestamp) FROM {table}"
+        cursor.execute(query)
+        result = cursor.fetchone()
         cursor.close()
         conn.close()
+        return result # (min, max)
+    except Exception as e:
+        logger.warning(f"PostgreSQL bounds fetch failed for {table}. Error: {e}")
+        return None, None
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
+
 
 def fetch_data_from_postgres(table):
     """Fetches all data from a specific PostgreSQL table."""
@@ -78,7 +111,64 @@ def fetch_data_from_postgres(table):
 
         return df
     except Exception as e:
-        logger.error("PostgreSQL fetch error for %s: %s", table, e)
+        logger.warning(f"PostgreSQL fetch failed for {table}, falling back to SQLite. Error: {e}")
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                query = f"SELECT * FROM {sqlite_table} ORDER BY timestamp"
+                df = pd.read_sql_query(query, conn_sqlite)
+                if not df.empty:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                return df
+            except Exception as sq_exc:
+                logger.error("SQLite fallback fetch error: %s", sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
+        return pd.DataFrame()
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
+
+
+def fetch_data_by_date_range(table, start_date, end_date):
+    """Fetches data from a specific PostgreSQL table within a date range."""
+    conn = None
+    try:
+        conn = _get_postgres_conn_with_retry()
+        # Convert date to timestamp range [start_date 00:00:00, end_date 23:59:59]
+        query = f"SELECT * FROM {table} WHERE timestamp >= %s AND timestamp <= %s ORDER BY timestamp"
+        params = (
+            f"{start_date} 00:00:00",
+            f"{end_date} 23:59:59"
+        )
+        df = pd.read_sql_query(query, conn, params=params)
+        
+        if not df.empty:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            
+        return df
+    except Exception as e:
+        logger.warning(f"PostgreSQL range fetch failed for {table}. Error: {e}")
+        # Fallback to SQLite
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                # SQLite Date filtering
+                query = f"SELECT * FROM {sqlite_table} WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp"
+                df = pd.read_sql_query(query, conn_sqlite, params=(f"{start_date} 00:00:00", f"{end_date} 23:59:59"))
+                if not df.empty:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                return df
+            except Exception as sq_exc:
+                logger.error("SQLite range fallback fetch error: %s", sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
         return pd.DataFrame()
     finally:
         if conn is not None and not conn.closed:
@@ -102,7 +192,28 @@ def fetch_recent_points_from_postgres(table, limit=120):
             df = df.sort_values("timestamp").reset_index(drop=True)
         return df
     except Exception as exc:
-        logger.error("PostgreSQL recent fetch error for %s: %s", table, exc)
+        logger.warning(f"PostgreSQL fetch failed for {table}, falling back to SQLite. Error: {exc}")
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                query = f"""
+                    SELECT timestamp, avg_voltage_ln, avg_voltage_ll, avg_current, total_kw, total_net_kwh
+                    FROM {sqlite_table}
+                    ORDER BY timestamp DESC
+                    LIMIT {limit}
+                """
+                df = pd.read_sql_query(query, conn_sqlite)
+                if not df.empty:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    df = df.sort_values("timestamp").reset_index(drop=True)
+                return df
+            except Exception as sq_exc:
+                logger.error("SQLite fallback recent fetch error: %s", sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
         return pd.DataFrame()
     finally:
         if conn is not None and not conn.closed:
@@ -126,7 +237,28 @@ def fetch_incremental_points_from_postgres(table, since_timestamp, limit=240):
             df["timestamp"] = pd.to_datetime(df["timestamp"])
         return df
     except Exception as exc:
-        logger.error("PostgreSQL incremental fetch error for %s: %s", table, exc)
+        logger.warning(f"PostgreSQL fetch failed for {table}, falling back to SQLite. Error: {exc}")
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                query = f"""
+                    SELECT timestamp, avg_voltage_ln, avg_voltage_ll, avg_current, total_kw, total_net_kwh
+                    FROM {sqlite_table}
+                    WHERE timestamp > ?
+                    ORDER BY timestamp ASC
+                    LIMIT ?
+                """
+                df = pd.read_sql_query(query, conn_sqlite, params=(since_timestamp, limit))
+                if not df.empty:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                return df
+            except Exception as sq_exc:
+                logger.error("SQLite fallback incremental fetch error: %s", sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
         return pd.DataFrame()
     finally:
         if conn is not None and not conn.closed:
@@ -154,8 +286,37 @@ def fetch_latest_machine_snapshots():
             snapshots[machine_name] = row
         return snapshots
     except Exception as exc:
-        logger.error("PostgreSQL snapshot fetch error: %s", exc)
-        return {}
+        logger.warning(f"PostgreSQL snapshot fetch failed, falling back to SQLite. Error: {exc}")
+        try:
+            conn_sqlite = get_sqlite_conn()
+            snapshots_sq = {}
+            for machine_name, table in MACHINE_TABLE_MAPPING.items():
+                sqlite_table = sanitize_sqlite_table_name(machine_name)
+                query = f"""
+                    SELECT timestamp, avg_voltage_ln, avg_voltage_ll, avg_current, total_kw, total_net_kwh
+                    FROM {sqlite_table}
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """
+                # Check if table exists first
+                cursor = conn_sqlite.cursor()
+                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{sqlite_table}';")
+                if not cursor.fetchone():
+                    continue
+                    
+                df = pd.read_sql_query(query, conn_sqlite)
+                if df.empty:
+                    continue
+                row = df.iloc[0].to_dict()
+                row["timestamp"] = pd.to_datetime(row["timestamp"])
+                snapshots_sq[machine_name] = row
+            return snapshots_sq
+        except Exception as sq_exc:
+            logger.error("SQLite fallback snapshot fetch error: %s", sq_exc)
+            return {}
+        finally:
+            if 'conn_sqlite' in locals() and conn_sqlite:
+                conn_sqlite.close()
     finally:
         if conn is not None and not conn.closed:
             conn.close()

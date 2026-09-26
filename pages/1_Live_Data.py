@@ -2,7 +2,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from config.settings import ACTIVE_MACHINE_NAMES, DEVICES, MACHINE_TABLE_MAPPING
-from data_fetcher.modbus_fetcher import run_fetcher
 from services.telemetry_runtime import ensure_telemetry_server_process
 from services.telemetry_stream import STREAM_PORT
 from ui.amtdc import apply_page_config, close_shell, inject_styles, render_shell, render_sidebar
@@ -14,17 +13,7 @@ from utils.db_handler import fetch_latest_machine_snapshots
 apply_page_config("AMTDC Live Data")
 
 
-@st.cache_resource
-def start_background_services():
-    try:
-        run_fetcher()
-    except Exception as exc:
-        print(f"Error starting background services: {exc}")
-    return True
-
-
 def main():
-    start_background_services()
     ensure_telemetry_server_process()
 
     inject_styles()

@@ -101,7 +101,7 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
     else:
         series_df = fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE * 10)
 
-    series_df = series_df.tail(WINDOW_SIZE)
+    series_df = _filter_valid_meter_rows(series_df).tail(WINDOW_SIZE)
 
     series = []
     if not series_df.empty:
@@ -110,7 +110,9 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
             for row in series_df[["timestamp", parameter]].to_dict(orient="records")
         ]
 
-    window_df = fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE * 10).tail(WINDOW_SIZE)
+    window_df = _filter_valid_meter_rows(
+        fetch_recent_points_from_postgres(table, limit=WINDOW_SIZE * 10)
+    ).tail(WINDOW_SIZE)
     window_series = []
     if not window_df.empty:
         window_series = [
@@ -157,7 +159,9 @@ def _build_series(machine, parameter="total_kw", window_size=WINDOW_SIZE):
         return None, {"error": f"Unknown machine: {machine}"}, 404
 
     parameter = PARAMETER_FIELDS.get(parameter, "total_kw")
-    window_df = fetch_recent_points_from_postgres(table, limit=window_size * 10).tail(window_size)
+    window_df = _filter_valid_meter_rows(
+        fetch_recent_points_from_postgres(table, limit=window_size * 10)
+    ).tail(window_size)
     if window_df.empty:
         payload = {
             "machine": machine,

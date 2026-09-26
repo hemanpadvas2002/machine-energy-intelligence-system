@@ -339,7 +339,7 @@ def build_streaming_dashboard_html(
             parentUrl = null;
           }}
           const host = parentUrl && parentUrl.hostname ? parentUrl.hostname : fallbackHost;
-          return `https://${{host}}:${{apiPort}}`;
+          return `http://${{host}}:${{apiPort}}`;
         }}
 
         const apiBaseUrl = resolveApiBaseUrl();

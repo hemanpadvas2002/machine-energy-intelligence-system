@@ -103,19 +103,8 @@ def start_streamlit():
         "--browser.gatherUsageStats", "false",
     ]
 
-    # Check for HTTPS certs and add if present
-    cert_dir = os.path.join(ROOT, "certs")
-    cert = os.path.join(cert_dir, "server.crt")
-    key = os.path.join(cert_dir, "server.key")
-
-    if os.path.isfile(cert) and os.path.isfile(key):
-        cmd += ["--server.sslCertFile", cert, "--server.sslKeyFile", key]
-        proto = "https"
-    else:
-        proto = "http"
-
     proc = subprocess.Popen(cmd, cwd=ROOT)
-    print(f"[START] Streamlit at {proto}://localhost:{STREAMLIT_PORT}")
+    print(f"[START] Streamlit at http://localhost:{STREAMLIT_PORT}")
     return proc
 
 def main():

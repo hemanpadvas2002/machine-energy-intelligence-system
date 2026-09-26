@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import ssl
 import threading
 import time
 from collections import Counter
@@ -26,9 +25,6 @@ STREAM_HOST = os.getenv("AMTDC_STREAM_HOST", "0.0.0.0")
 STREAM_PORT = 8765
 WINDOW_SIZE = 60
 MODE_LIMIT = 5
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CERT_FILE = PROJECT_ROOT / "certs" / "server.crt"
-KEY_FILE = PROJECT_ROOT / "certs" / "server.key"
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMIT_REQUESTS = 240
 _rate_limit_lock = threading.Lock()
@@ -312,29 +308,14 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
         logger.debug("Telemetry stream: " + format, *args)
 
 
-def _build_tls_context():
-    if not CERT_FILE.exists() or not KEY_FILE.exists():
-        raise FileNotFoundError(
-            f"HTTPS certificate files are missing. Expected {CERT_FILE} and {KEY_FILE}."
-        )
-
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
-    context.options |= getattr(ssl, "OP_NO_COMPRESSION", 0)
-    context.minimum_version = getattr(ssl.TLSVersion, "TLSv1_3", ssl.TLSVersion.TLSv1_2)
-    return context
-
-
-def _create_https_server():
-    server = ThreadingHTTPServer((STREAM_HOST, STREAM_PORT), TelemetryRequestHandler)
-    server.socket = _build_tls_context().wrap_socket(server.socket, server_side=True)
-    return server
+def _create_http_server():
+    return ThreadingHTTPServer((STREAM_HOST, STREAM_PORT), TelemetryRequestHandler)
 
 
 @lru_cache(maxsize=1)
 def start_telemetry_stream_server():
     try:
-        server = _create_https_server()
+        server = _create_http_server()
     except OSError:
         logger.info("Telemetry stream server already active on %s:%s", STREAM_HOST, STREAM_PORT)
         return None
@@ -345,7 +326,7 @@ def start_telemetry_stream_server():
 
 
 def run_telemetry_stream_server_forever():
-    server = _create_https_server()
+    server = _create_http_server()
     server.serve_forever()
 
 

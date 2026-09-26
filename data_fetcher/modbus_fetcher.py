@@ -238,6 +238,11 @@ def poll_device(device):
     # hammering every second keeps them permanently wedged.
     connect_backoff = float(device.get("connect_backoff", 6))
 
+    consecutive_connect_failures = 0
+    consecutive_zero_reads = 0
+    OFFLINE_BACKOFF_AFTER = 3    # consecutive failures before 60s sleep
+    ZERO_CACHE_RESET_AFTER = 10  # consecutive all-zero reads before profile re-scan
+
     while not stop_event.is_set():
         cycle_start = time.time()
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -276,7 +281,15 @@ def poll_device(device):
             framer = device_framers.get(device_name, FramerType.RTU)
             client = connect_modbus(host, port, device_name, timeout, framer=framer)
             if client is None:
-                next_connect_attempt = now + connect_backoff
+                consecutive_connect_failures += 1
+                if consecutive_connect_failures >= OFFLINE_BACKOFF_AFTER:
+                    logging.warning(f"[{device_name}] offline — retrying in 60s")
+                    next_connect_attempt = now + 60
+                    consecutive_connect_failures = 0
+                else:
+                    next_connect_attempt = now + connect_backoff
+            else:
+                consecutive_connect_failures = 0
 
         if client is not None and client.is_socket_open():
             cached_profile = device_profiles.get(device_name)
@@ -318,6 +331,7 @@ def poll_device(device):
                     "last_handshake": datetime.datetime.now().isoformat(timespec="seconds"),
                 }
                 valid_packet = True
+                consecutive_zero_reads = 0
             elif best_packet is not None:
                 data_packet.update(best_packet)
                 valid_packet = is_packet_valid(data_packet)
@@ -348,7 +362,17 @@ def poll_device(device):
                 # SELC AC-S2E gateways only accept ONE TCP client at a time, so
                 # closing/reconnecting here thrashes the single connection slot and
                 # can lock the app out entirely. Keep the socket open.
-                logging.info(f"[{device_name}] All-zero telemetry (machine likely idle); keeping connection open.")
+                consecutive_zero_reads += 1
+                if consecutive_zero_reads >= ZERO_CACHE_RESET_AFTER:
+                    logging.warning(
+                        f"[{device_name}] {ZERO_CACHE_RESET_AFTER} consecutive all-zero reads; "
+                        f"invalidating profile cache and re-scanning."
+                    )
+                    device_profiles.pop(device_name, None)
+                    next_endpoint_probe = 0
+                    consecutive_zero_reads = 0
+                else:
+                    logging.info(f"[{device_name}] All-zero telemetry (machine likely idle); keeping connection open.")
         else:
             logging.warning(f"[{device_name}] Device offline - no Modbus handshake; writing diagnostic zero packet.")
             device_status[device_name] = {

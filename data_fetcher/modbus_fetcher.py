@@ -34,14 +34,7 @@ device_status = {}
 active_clients = {}  # device_name -> live ModbusTcpClient, closed on shutdown
 
 def sanitize_sqlite_table_name(name):
-    mapping = {
-        "Galaxy_CNC":          "galaxy_readings",
-        "MTX_CNC":             "mtx_readings",
-        "LML_GRINDMASTER_CNC": "lml_upmmc_readings",
-        "AGI_ROBO_CNC":        "agi_robo_readings",
-        "Ace_Vantage_CNC":     "ace_vantage_readings",
-    }
-    return mapping.get(name, name.lower().replace(" ", "_") + "_readings")
+    return MACHINE_TABLE_MAPPING.get(name, name.lower().replace(" ", "_"))
 
 def _set_immediate_reset_on_close(client):
     """Configure SO_LINGER=0 so closing the socket sends a TCP RST instead of a
@@ -374,10 +367,32 @@ def poll_device(device):
             except Exception as e:
                 logging.error(f"[{device_name}] DB insert error: {e}")
 
-        try:
-            save_to_sqlite(sqlite_table, data_packet, DB_COLUMNS)
-        except Exception as exc:
-            logging.error(f"[{device_name}] SQLite save error: {exc}")
+        def _is_zero(v):
+            return v is None or v == "Error" or v == 0 or v == 0.0
+
+        avg_vln = data_packet.get("Avg Voltage LN")
+        avg_vll = data_packet.get("Avg Voltage LL")
+        avg_cur = data_packet.get("Avg Current")
+        total_kw_val = data_packet.get("Total KW")
+        total_kwh_val = data_packet.get("Total net kWh")
+
+        all_zero = (
+            _is_zero(avg_vln) and _is_zero(avg_vll) and _is_zero(avg_cur)
+            and _is_zero(total_kw_val) and _is_zero(total_kwh_val)
+        )
+
+        if not all_zero:
+            kw = float(total_kw_val) if not _is_zero(total_kw_val) else 0.0
+            if kw < 2.82:
+                state = {"state_label": "IDLE", "p_idle": 1.0, "p_working": 0.0}
+            elif kw > 3.05:
+                state = {"state_label": "WORKING", "p_idle": 0.0, "p_working": 1.0}
+            else:
+                state = {"state_label": "TRANSITION", "p_idle": 0.5, "p_working": 0.5}
+            try:
+                save_to_sqlite(sqlite_table, data_packet, DB_COLUMNS, state=state)
+            except Exception as exc:
+                logging.error(f"[{device_name}] SQLite save error: {exc}")
 
         # Precise 1-second interval tracking
         elapsed = time.time() - cycle_start

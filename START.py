@@ -67,9 +67,17 @@ def init_db():
                 avg_voltage_ll REAL,
                 avg_current REAL,
                 total_kw    REAL,
-                total_net_kwh REAL
+                total_net_kwh REAL,
+                state_label TEXT,
+                p_idle      REAL,
+                p_working   REAL
             )
         """)
+        for col, col_type in [("state_label", "TEXT"), ("p_idle", "REAL"), ("p_working", "REAL")]:
+            try:
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
 
     conn.commit()
     conn.close()

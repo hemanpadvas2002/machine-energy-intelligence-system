@@ -46,14 +46,7 @@ def get_sqlite_conn():
     return sqlite3.connect(SQLITE_DB)
 
 def sanitize_sqlite_table_name(name):
-    mapping = {
-        "Galaxy_CNC":          "galaxy_readings",
-        "MTX_CNC":             "mtx_readings",
-        "LML_GRINDMASTER_CNC": "lml_upmmc_readings",
-        "AGI_ROBO_CNC":        "agi_robo_readings",
-        "Ace_Vantage_CNC":     "ace_vantage_readings",
-    }
-    return mapping.get(name, name.lower().replace(" ", "_") + "_readings")
+    return MACHINE_TABLE_MAPPING.get(name, name.lower().replace(" ", "_"))
 
 def init_postgres_db():
     """Ensures all configured PostgreSQL machine tables exist."""
@@ -358,25 +351,37 @@ def init_sqlite_db(devices, mapping_func):
         table = mapping_func(device["name"])
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS {table} (
-                timestamp      TEXT,
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp      TEXT NOT NULL,
                 avg_voltage_ln REAL,
                 avg_voltage_ll REAL,
                 avg_current    REAL,
                 total_kw       REAL,
-                total_net_kwh  REAL
+                total_net_kwh  REAL,
+                state_label    TEXT,
+                p_idle         REAL,
+                p_working      REAL
             )
         """)
+        for col, col_type in [("state_label", "TEXT"), ("p_idle", "REAL"), ("p_working", "REAL")]:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
     conn.commit()
     conn.close()
 
-def save_to_sqlite(table, data, columns_mapping):
+def save_to_sqlite(table, data, columns_mapping, state=None):
     """Saves a data packet to SQLite."""
     columns = ["timestamp"] + list(columns_mapping.values())
-    placeholders = ", ".join(["?"] * len(columns))
     values = [data["Timestamp"]] + [
         None if data.get(k) == "Error" else data.get(k)
         for k in columns_mapping.keys()
     ]
+    if state:
+        columns += ["state_label", "p_idle", "p_working"]
+        values += [state["state_label"], state["p_idle"], state["p_working"]]
+    placeholders = ", ".join(["?"] * len(columns))
     conn = get_sqlite_conn()
     try:
         conn.execute(

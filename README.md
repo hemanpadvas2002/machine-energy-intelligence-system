@@ -1,5 +1,41 @@
 # Machine Energy Intelligence System
 
+## Quick Start
+
+```bash
+# 1. Create virtual environment and install dependencies
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux / Mac
+
+pip install -r requirements.txt
+
+# 2. (Windows) Double-click START.bat
+#    OR run directly:
+python START.py
+```
+
+The dashboard opens at **http://localhost:8501**
+
+### Galaxy_CNC Network Mode
+
+To switch Galaxy_CNC between LAN and direct-link mode, edit `config/settings.py`:
+
+- **Office LAN:** `"host": "192.168.1.182"` and `"port": 522`  
+- **Direct cable (APIPA):** `"host": "169.254.92.218"` and `"port": 520`
+
+### Modbus Reads Returning Zeros?
+
+Open the **SELC AC-S2E web configurator** at the device IP → **Serial Port** tab:
+- Set Baud Rate: **9600**
+- Parity: **Even**
+- Stop bits: **1**
+- Mode: **RTU**
+
+These must match the power meter's RS-485 configuration.
+
+---
+
 ## Overview
 
 This project focuses on monitoring and analysing machine-level power consumption to build intelligent insights around energy usage.

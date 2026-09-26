@@ -7,13 +7,15 @@ POSTGRES_CONFIG = {
     "port": "5432"
 }
 
-SQLITE_DB = "machine_data.db"
+SQLITE_DB_PATH = "machine_data.db"
+SQLITE_DB = SQLITE_DB_PATH  # Backward compatibility
 
 # Device Configuration
 DEVICES = [
     {
         "name": "Galaxy_CNC",
-        "host": "169.254.92.218",
+        "host": "169.254.92.218",  # APIPA direct link (for isolated testing)
+        # To switch to office LAN: change host to "192.168.1.182" and port to 522
         "port": 520,
         # Direct laptop<->converter link: converter self-assigned an APIPA
         # (169.254.x.x) address. Laptop must also be on 169.254.x.x / 255.255.0.0.

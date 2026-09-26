@@ -88,7 +88,7 @@ STREAMLIT_PORT = 8501
 def start_streamlit():
     """Launch Streamlit dashboard subprocess."""
     cmd = [
-        sys.executable, "-m", "streamlit", "run", "pages/home.py",
+        sys.executable, "-m", "streamlit", "run", "app.py",
         "--server.port", str(STREAMLIT_PORT),
         "--server.address", "0.0.0.0",
         "--server.headless", "true",
@@ -107,7 +107,7 @@ def start_streamlit():
         proto = "http"
 
     proc = subprocess.Popen(cmd, cwd=ROOT)
-    print(f"[START] Streamlit → {proto}://localhost:{STREAMLIT_PORT}")
+    print(f"[START] Streamlit at {proto}://localhost:{STREAMLIT_PORT}")
     return proc
 
 def main():

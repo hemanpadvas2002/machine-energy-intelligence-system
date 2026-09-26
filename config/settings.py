@@ -14,8 +14,7 @@ SQLITE_DB = SQLITE_DB_PATH  # Backward compatibility
 DEVICES = [
     {
         "name": "Galaxy_CNC",
-        "host": "169.254.92.218",  # APIPA direct link (for isolated testing)
-        # To switch to office LAN: change host to "192.168.1.182" and port to 522
+        "host": "192.168.1.252",  # Office LAN
         "port": 520,
         # Direct laptop<->converter link: converter self-assigned an APIPA
         # (169.254.x.x) address. Laptop must also be on 169.254.x.x / 255.255.0.0.

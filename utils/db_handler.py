@@ -314,6 +314,43 @@ def fetch_latest_machine_snapshots():
         if conn is not None and not conn.closed:
             conn.close()
 
+def fetch_24h_peak_kw(table):
+    """Returns MAX(ABS(total_kw)) recorded in the last 24 hours for the given table."""
+    conn = None
+    try:
+        conn = _get_postgres_conn_with_retry()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT MAX(ABS(total_kw)) FROM {table} WHERE timestamp >= NOW() - INTERVAL '24 hours'"
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        return float(result[0]) if result and result[0] is not None else 0.0
+    except Exception as exc:
+        logger.warning("Peak kW 24h fetch failed for %s (PostgreSQL): %s", table, exc)
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                cursor_sq = conn_sqlite.cursor()
+                cursor_sq.execute(
+                    f"SELECT MAX(ABS(total_kw)) FROM {sqlite_table} WHERE timestamp >= datetime('now', '-24 hours')"
+                )
+                result = cursor_sq.fetchone()
+                cursor_sq.close()
+                return float(result[0]) if result and result[0] is not None else 0.0
+            except Exception as sq_exc:
+                logger.error("SQLite peak kW 24h fallback error: %s", sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
+        return 0.0
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
+
+
 def insert_to_postgres(table, data_packet, timestamp):
     """Inserts one record into a PostgreSQL table."""
     try:

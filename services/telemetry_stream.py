@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from config.settings import ACTIVE_MACHINE_NAMES, MACHINE_TABLE_MAPPING
 from services.matlab_analytics import get_matlab_analytics_service
 from utils.db_handler import (
+    fetch_24h_peak_kw,
     fetch_incremental_points_from_postgres,
     fetch_latest_machine_snapshots,
     fetch_recent_points_from_postgres,
@@ -84,13 +85,28 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
 
     parameter = PARAMETER_FIELDS.get(parameter, "total_kw")
     latest_rows = {
-        machine: row
-        for machine, row in fetch_latest_machine_snapshots().items()
-        if machine in ACTIVE_MACHINE_NAMES
+        m: row
+        for m, row in fetch_latest_machine_snapshots().items()
+        if m in ACTIVE_MACHINE_NAMES
     }
-    kpi_rows = list(latest_rows.values())
-    kw_values = [float(row.get("total_kw") or 0.0) for row in kpi_rows]
-    total_energy = sum(float(row.get("total_net_kwh") or 0.0) for row in kpi_rows)
+
+    # Active = machine wrote a row in the last 60 seconds
+    cutoff = datetime.utcnow() - timedelta(seconds=60)
+    active_rows = {
+        m: row for m, row in latest_rows.items()
+        if row.get("timestamp") is not None
+        and row["timestamp"].to_pydatetime().replace(tzinfo=None) > cutoff
+    }
+
+    total_energy = sum(float(row.get("total_net_kwh") or 0.0) for row in latest_rows.values())
+    active_kw = [float(row.get("total_kw") or 0.0) for row in active_rows.values()]
+    avg_kw = round(sum(active_kw) / len(active_kw), 3) if active_kw else 0.0
+
+    # 24-hour peak across every configured machine table
+    peak_kw_24h = max(
+        (fetch_24h_peak_kw(t) for t in MACHINE_TABLE_MAPPING.values()),
+        default=0.0,
+    )
 
     if since:
         series_df = fetch_incremental_points_from_postgres(table, since)
@@ -116,17 +132,18 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
             for row in window_df[["timestamp", parameter]].to_dict(orient="records")
         ]
 
-    latest_machine_rows = []
-    for machine_name, row in latest_rows.items():
+    machine_list = []
+    for m_name, row in latest_rows.items():
         load_kw = float(row.get("total_kw") or 0.0)
-        latest_machine_rows.append(
-            {
-                "machine": machine_name,
-                "load_kw": load_kw,
-                "state": "Optimal" if abs(load_kw) > 0.01 else "Idle",
-                "last_sync": row["timestamp"].isoformat(),
-            }
-        )
+        ts = row.get("timestamp")
+        machine_list.append({
+            "machine": m_name,
+            "load_kw": round(load_kw, 3),
+            "avg_voltage_ln": round(float(row.get("avg_voltage_ln") or 0.0), 1),
+            "online": m_name in active_rows,
+            "state": "WORKING" if abs(load_kw) > 0.01 else "IDLE",
+            "last_sync": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+        })
 
     payload = {
         "machine": machine,
@@ -137,12 +154,12 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
         "window": window_series,
         "kpis": {
             "total_energy": round(total_energy, 2),
-            "active_machines": len(latest_rows),
+            "active_machines": len(active_rows),
             "machine_count": len(ACTIVE_MACHINE_NAMES),
-            "average_load": round(sum(kw_values) / len(kw_values), 2) if kw_values else 0.0,
-            "peak_demand": round(max((abs(value) for value in kw_values), default=0.0), 2),
+            "average_load": avg_kw,
+            "peak_demand": round(peak_kw_24h, 3),
         },
-        "machines": latest_machine_rows,
+        "machines": machine_list,
         "modes": _compute_modes(window_series),
         "zero_only_signal": bool(window_series) and all(point["value"] == 0.0 for point in window_series),
     }

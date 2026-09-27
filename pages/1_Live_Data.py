@@ -25,7 +25,7 @@ _DB_COLS = {
 }
 
 
-def _fetch_last_rows(table: str, n: int = 10) -> pd.DataFrame:
+def _fetch_last_rows(table: str, n: int = 30) -> pd.DataFrame:
     try:
         cols = ", ".join(_DB_COLS.keys())
         with sqlite3.connect(SQLITE_DB_PATH) as conn:

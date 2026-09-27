@@ -312,7 +312,7 @@ def fetch_latest_machine_snapshots():
                 cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{sqlite_table}';")
                 if not cursor.fetchone():
                     continue
-                    
+
                 df = pd.read_sql_query(query, conn_sqlite)
                 if df.empty:
                     continue
@@ -326,6 +326,45 @@ def fetch_latest_machine_snapshots():
         finally:
             if 'conn_sqlite' in locals() and conn_sqlite:
                 conn_sqlite.close()
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
+
+
+def fetch_latest_valid_snapshots():
+    """Fetches the latest NON-ZERO telemetry row per machine for display purposes.
+
+    Zero/diagnostic packets are excluded so callers show the last real reading,
+    matching what the timeseries graph displays via _filter_valid_meter_rows().
+    Falls back to fetch_latest_machine_snapshots() if no non-zero row exists.
+    """
+    _NONZERO_WHERE = (
+        "(ABS(COALESCE(avg_voltage_ln, 0)) + ABS(COALESCE(avg_voltage_ll, 0)) "
+        "+ ABS(COALESCE(avg_current, 0)) + ABS(COALESCE(total_kw, 0)) "
+        "+ ABS(COALESCE(total_net_kwh, 0))) > 0"
+    )
+    conn = None
+    snapshots = {}
+    try:
+        conn = _get_postgres_conn_with_retry()
+        for machine_name, table in MACHINE_TABLE_MAPPING.items():
+            query = f"""
+                SELECT timestamp, avg_voltage_ln, avg_voltage_ll, avg_current, total_kw, total_net_kwh
+                FROM {table}
+                WHERE {_NONZERO_WHERE}
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """
+            df = pd.read_sql_query(query, conn)
+            if df.empty:
+                continue
+            row = df.iloc[0].to_dict()
+            row["timestamp"] = pd.to_datetime(row["timestamp"])
+            snapshots[machine_name] = row
+        return snapshots
+    except Exception as exc:
+        logger.warning("fetch_latest_valid_snapshots PG failed, using latest-any fallback: %s", exc)
+        return fetch_latest_machine_snapshots()
     finally:
         if conn is not None and not conn.closed:
             conn.close()

@@ -78,6 +78,7 @@ device_profiles = {}
 device_ports = {}
 device_status = {}
 active_clients = {}  # device_name -> live ModbusTcpClient, closed on shutdown
+_device_online_prev: dict = {}  # tracks previous per-device online state for transition logging
 
 def sanitize_sqlite_table_name(name):
     return MACHINE_TABLE_MAPPING.get(name, name.lower().replace(" ", "_"))
@@ -370,12 +371,19 @@ def poll_device(device):
                     logging.info(f"[{device_name}] Using profile: {selected_profile}")
                 device_profiles[device_name] = selected_profile
                 device_ports[device_name] = port
+                now_iso = datetime.datetime.now().isoformat(timespec="seconds")
                 device_status[device_name] = {
                     "online": True,
                     "host": host,
                     "port": port,
-                    "last_handshake": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "last_handshake": now_iso,
                 }
+                if _device_online_prev.get(device_name) is not True:
+                    logging.info(
+                        "[%s] STATE TRANSITION: offline → online at %s (host=%s port=%s)",
+                        device_name, now_iso, host, port,
+                    )
+                _device_online_prev[device_name] = True
                 valid_packet = True
                 consecutive_zero_reads = 0
             elif best_packet is not None:
@@ -420,7 +428,14 @@ def poll_device(device):
                 else:
                     logging.info(f"[{device_name}] All-zero telemetry (machine likely idle); keeping connection open.")
         else:
+            now_iso = datetime.datetime.now().isoformat(timespec="seconds")
             logging.warning(f"[{device_name}] Device offline - no Modbus handshake; writing diagnostic zero packet.")
+            if _device_online_prev.get(device_name) is not False:
+                logging.warning(
+                    "[%s] STATE TRANSITION: online → offline at %s",
+                    device_name, now_iso,
+                )
+            _device_online_prev[device_name] = False
             device_status[device_name] = {
                 "online": False,
                 "host": host,

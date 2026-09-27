@@ -16,6 +16,7 @@ from utils.db_handler import (
     fetch_24h_peak_kw,
     fetch_incremental_points_from_postgres,
     fetch_latest_machine_snapshots,
+    fetch_latest_valid_snapshots,
     fetch_recent_points_from_postgres,
 )
 
@@ -84,13 +85,24 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
         return {"error": f"Unknown machine: {machine}"}, 404
 
     parameter = PARAMETER_FIELDS.get(parameter, "total_kw")
+
+    # latest_rows: absolute most-recent row per machine (may be a zero/diagnostic
+    # packet).  Used ONLY for the 60-second "is the machine still writing?" check.
     latest_rows = {
         m: row
         for m, row in fetch_latest_machine_snapshots().items()
         if m in ACTIVE_MACHINE_NAMES
     }
 
-    # Active = machine wrote a row in the last 60 seconds
+    # valid_rows: most-recent NON-ZERO row per machine.  Used for display values
+    # (voltage, kW) so the fleet panel matches what the timeseries graph shows.
+    valid_rows = {
+        m: row
+        for m, row in fetch_latest_valid_snapshots().items()
+        if m in ACTIVE_MACHINE_NAMES
+    }
+
+    # Active = machine wrote ANY row (including zero heartbeat) in the last 60 s
     cutoff = datetime.utcnow() - timedelta(seconds=60)
     active_rows = {
         m: row for m, row in latest_rows.items()
@@ -133,14 +145,19 @@ def build_dashboard_payload(machine, parameter="total_kw", since=None):
         ]
 
     machine_list = []
-    for m_name, row in latest_rows.items():
-        load_kw = float(row.get("total_kw") or 0.0)
-        ts = row.get("timestamp")
+    for m_name in latest_rows:
+        # For the online/timestamp check: use latest_rows (includes zero heartbeats)
+        ts = latest_rows[m_name].get("timestamp")
+        is_online = m_name in active_rows
+        # For display values: prefer valid_rows (last non-zero reading) so the
+        # fleet panel voltage matches what the timeseries graph renders.
+        display_row = valid_rows.get(m_name, latest_rows[m_name])
+        load_kw = float(display_row.get("total_kw") or 0.0)
         machine_list.append({
             "machine": m_name,
             "load_kw": round(load_kw, 3),
-            "avg_voltage_ln": round(float(row.get("avg_voltage_ln") or 0.0), 1),
-            "online": m_name in active_rows,
+            "avg_voltage_ln": round(float(display_row.get("avg_voltage_ln") or 0.0), 1),
+            "online": is_online,
             "state": "WORKING" if abs(load_kw) > 0.01 else "IDLE",
             "last_sync": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
         })

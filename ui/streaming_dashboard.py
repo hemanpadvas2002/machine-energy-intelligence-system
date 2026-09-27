@@ -310,7 +310,7 @@ def build_streaming_dashboard_html(
             <div id="modeList" class="mode-list"></div>
           </div>
         </section>
-        {'<section class="panel"><div class="section-label">Unit Operational Status</div><h3>Live Machine State</h3><table class="status-table"><thead><tr><th>Machine ID</th><th>Operational State</th><th>Load (kW)</th><th>Last Sync</th></tr></thead><tbody id="statusRows"></tbody></table></section>' if view_mode != "live" else '<div id="statusRows" style="display:none"></div>'}
+        {'<section class="panel"><div class="section-label">Unit Operational Status</div><h3 id="rawTableHeading">Live Machine State</h3><div style="overflow:auto;max-height:340px"><table class="status-table"><thead><tr><th>Timestamp</th><th>Voltage (V)</th><th>Current (A)</th><th>Power (kW)</th><th>Energy (kWh)</th><th>State</th></tr></thead><tbody id="rawTableBody"></tbody></table></div></section>' if view_mode != "live" else '<div id="rawTableBody" style="display:none"></div>'}
       </div>
       <script>
         Chart.register(window['chartjs-plugin-annotation']);
@@ -338,6 +338,7 @@ def build_streaming_dashboard_html(
           fftChart: null,
           kpiPolling: null,
           analyticsPolling: null,
+          rawPolling: null,
         }};
 
         const timeseriesChart = new Chart(document.getElementById('powerChart'), {{
@@ -513,20 +514,27 @@ def build_streaming_dashboard_html(
           }});
         }}
 
-        function updateStatusRows(rows) {{
-          const tbody = document.getElementById('statusRows');
-          tbody.innerHTML = '';
-          rows.forEach((row) => {{
-            const tr = document.createElement('tr');
-            const badgeClass = row.state === 'Optimal' ? 'state-optimal' : 'state-idle';
-            tr.innerHTML = `
-              <td><strong>${{row.machine}}</strong></td>
-              <td><span class="state-badge ${{badgeClass}}">${{row.state}}</span></td>
-              <td>${{Number(row.load_kw || 0).toFixed(2)}}</td>
-              <td>${{formatTime(row.last_sync)}}</td>
-            `;
-            tbody.appendChild(tr);
-          }});
+        function updateRawTable(rows) {{
+          const tbody = document.getElementById('rawTableBody');
+          if (!tbody) return;
+          const heading = document.getElementById('rawTableHeading');
+          if (heading) heading.textContent = state.machine + ' — Live Readings';
+          if (!rows || !rows.length) {{
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No live data yet for ${{state.machine}}</td></tr>`;
+            return;
+          }}
+          tbody.innerHTML = rows.map((row) => {{
+            const badgeClass = row.state_label === 'WORKING' ? 'state-optimal' : 'state-idle';
+            const ts = row.timestamp ? row.timestamp.substring(11, 19) : '—';
+            return `<tr>
+              <td>${{ts}}</td>
+              <td>${{Number(row.avg_voltage_ln || 0).toFixed(1)}}</td>
+              <td>${{Number(row.avg_current    || 0).toFixed(3)}}</td>
+              <td>${{Number(row.total_kw       || 0).toFixed(3)}}</td>
+              <td>${{Number(row.total_net_kwh  || 0).toFixed(2)}}</td>
+              <td><span class="state-badge ${{badgeClass}}">${{row.state_label || '—'}}</span></td>
+            </tr>`;
+          }}).join('');
         }}
 
         function renderWarning(payload) {{
@@ -642,9 +650,20 @@ def build_streaming_dashboard_html(
               parameter: state.parameter
             }});
             updateKpis(payload.kpis || {{}});
-            updateStatusRows(payload.machines || []);
           }} catch (error) {{
             console.error('Dashboard fetch failed', error);
+          }}
+        }}
+
+        async function refreshRawTable() {{
+          try {{
+            const payload = await fetchJson('/api/telemetry/raw', {{
+              machine: state.machine,
+              limit: 30
+            }});
+            updateRawTable(payload.rows || []);
+          }} catch (error) {{
+            console.error('Raw table fetch failed', error);
           }}
         }}
 
@@ -664,8 +683,10 @@ def build_streaming_dashboard_html(
         function schedulePolling() {{
           if (state.kpiPolling) window.clearInterval(state.kpiPolling);
           if (state.analyticsPolling) window.clearInterval(state.analyticsPolling);
+          if (state.rawPolling) window.clearInterval(state.rawPolling);
           state.kpiPolling = window.setInterval(refreshDashboard, 1500);
           state.analyticsPolling = window.setInterval(refreshAnalytics, 3000);
+          state.rawPolling = window.setInterval(refreshRawTable, 2000);
         }}
 
         function resetCharts() {{
@@ -684,6 +705,7 @@ def build_streaming_dashboard_html(
           resetCharts();
           refreshDashboard();
           refreshAnalytics();
+          refreshRawTable();
         }});
 
         document.getElementById('parameterSelect').addEventListener('change', (event) => {{
@@ -698,6 +720,7 @@ def build_streaming_dashboard_html(
 
         refreshDashboard();
         refreshAnalytics();
+        refreshRawTable();
         schedulePolling();
       </script>
     </body>

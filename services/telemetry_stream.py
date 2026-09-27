@@ -238,6 +238,31 @@ def build_timeseries_payload(machine, parameter="total_kw", window_size=WINDOW_S
     return payload, 200
 
 
+def build_raw_payload(machine, limit=30):
+    table = MACHINE_TABLE_MAPPING.get(machine)
+    if not table:
+        return {"error": f"Unknown machine: {machine}"}, 404
+
+    df = _filter_valid_meter_rows(
+        fetch_recent_points_from_postgres(table, limit=limit * 5)
+    ).tail(limit)
+
+    rows = []
+    if not df.empty:
+        for row in df.iloc[::-1].to_dict(orient="records"):
+            ts = row.get("timestamp")
+            rows.append({
+                "timestamp":      ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "avg_voltage_ln": round(float(row.get("avg_voltage_ln") or 0.0), 2),
+                "avg_current":    round(float(row.get("avg_current")    or 0.0), 3),
+                "total_kw":       round(float(row.get("total_kw")       or 0.0), 3),
+                "total_net_kwh":  round(float(row.get("total_net_kwh")  or 0.0), 2),
+                "state_label":    str(row.get("state_label") or "—"),
+            })
+
+    return {"machine": machine, "rows": rows}, 200
+
+
 class TelemetryRequestHandler(BaseHTTPRequestHandler):
     def _is_rate_limited(self):
         client_ip = self.client_address[0]
@@ -287,6 +312,9 @@ class TelemetryRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/telemetry/dashboard":
             payload, status = build_dashboard_payload(machine, parameter, since)
+        elif parsed.path == "/api/telemetry/raw":
+            limit = int(params.get("limit", [30])[0])
+            payload, status = build_raw_payload(machine, limit)
         elif parsed.path == "/api/matlab/fft":
             payload, status = build_fft_payload(machine, parameter, window_size)
         elif parsed.path == "/api/matlab/filter":

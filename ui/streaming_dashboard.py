@@ -352,8 +352,6 @@ def build_streaming_dashboard_html(
           fftChart: null,
           kpiPolling: null,
           analyticsPolling: null,
-          yMin: null,
-          yMax: null,
         }};
 
         const timeseriesChart = new Chart(document.getElementById('powerChart'), {{
@@ -405,7 +403,7 @@ def build_streaming_dashboard_html(
             }},
             scales: {{
               x: {{ grid: {{ display: false }}, ticks: {{ color: '#8ca0b6', maxTicksLimit: 6 }} }},
-              y: {{ beginAtZero: true, grid: {{ color: 'rgba(217,225,229,0.5)' }}, ticks: {{ color: '#8ca0b6' }} }}
+              y: {{ grid: {{ color: 'rgba(217,225,229,0.5)' }}, ticks: {{ color: '#8ca0b6' }} }}
             }}
           }}
         }});
@@ -560,37 +558,18 @@ def build_streaming_dashboard_html(
         }}
 
         function smoothAxis(allValues) {{
-          if (!allValues.length) return;
-          const localMin = Math.min(...allValues);
-          const localMax = Math.max(...allValues);
-          const span = Math.max(localMax - localMin, 0.05);
-          const padding = Math.max(span * 0.18, 0.02);
-          let targetMin = localMin - padding;
-          let targetMax = localMax + padding;
-
-          if (localMin >= 0 && localMax <= padding) {{
-            targetMin = 0;
+          const valid = allValues.filter(v => v !== null && v !== undefined && !isNaN(v));
+          if (!valid.length) {{
+            state.chart.options.scales.y.min = undefined;
+            state.chart.options.scales.y.max = undefined;
+            return;
           }}
-          if (localMax <= 0 && localMin >= -padding) {{
-            targetMax = 0;
-          }}
-
-          if (state.yMin === null || state.yMax === null) {{
-            state.yMin = targetMin;
-            state.yMax = targetMax;
-          }} else {{
-            state.yMin = state.yMin * 0.84 + targetMin * 0.16;
-            state.yMax = state.yMax * 0.84 + targetMax * 0.16;
-          }}
-
-          if (state.yMax - state.yMin < 0.05) {{
-            const center = (state.yMax + state.yMin) / 2;
-            state.yMin = center - 0.025;
-            state.yMax = center + 0.025;
-          }}
-
-          state.chart.options.scales.y.min = Number(state.yMin.toFixed(2));
-          state.chart.options.scales.y.max = Number(state.yMax.toFixed(2));
+          const localMin = Math.min(...valid);
+          const localMax = Math.max(...valid);
+          const span = Math.max(localMax - localMin, 0.1);
+          const padding = span * 0.12;
+          state.chart.options.scales.y.min = Number((localMin - padding).toFixed(2));
+          state.chart.options.scales.y.max = Number((localMax + padding).toFixed(2));
         }}
 
         function updateAnnotations(modes) {{
@@ -704,8 +683,8 @@ def build_streaming_dashboard_html(
         }}
 
         function resetCharts() {{
-          state.yMin = null;
-          state.yMax = null;
+          state.chart.options.scales.y.min = undefined;
+          state.chart.options.scales.y.max = undefined;
           state.chart.data.labels = [];
           state.chart.data.datasets.forEach((dataset) => dataset.data = []);
           state.fftChart.data.labels = [];

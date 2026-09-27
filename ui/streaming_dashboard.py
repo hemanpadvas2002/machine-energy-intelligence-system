@@ -310,21 +310,7 @@ def build_streaming_dashboard_html(
             <div id="modeList" class="mode-list"></div>
           </div>
         </section>
-        <section class="panel">
-          <div class="section-label">Unit Operational Status</div>
-          <h3>Live Machine State</h3>
-          <table class="status-table">
-            <thead>
-              <tr>
-                <th>Machine ID</th>
-                <th>Operational State</th>
-                <th>Load (kW)</th>
-                <th>Last Sync</th>
-              </tr>
-            </thead>
-            <tbody id="statusRows"></tbody>
-          </table>
-        </section>
+        {'<section class="panel"><div class="section-label">Unit Operational Status</div><h3>Live Machine State</h3><table class="status-table"><thead><tr><th>Machine ID</th><th>Operational State</th><th>Load (kW)</th><th>Last Sync</th></tr></thead><tbody id="statusRows"></tbody></table></section>' if view_mode != "live" else '<div id="statusRows" style="display:none"></div>'}
       </div>
       <script>
         Chart.register(window['chartjs-plugin-annotation']);

@@ -77,35 +77,37 @@ def main():
     render_sidebar("Live Data")
     render_shell("Live Data", "Telemetry", "Digital Transformation Dashboard", "Live Data")
 
+    # Determine sensible default: highest-load active machine
     snapshots = {
         machine: row
         for machine, row in fetch_latest_machine_snapshots().items()
         if machine in ACTIVE_MACHINE_NAMES
     }
-    default_machine = max(
+    busiest = max(
         snapshots,
-        key=lambda machine: abs(float(snapshots[machine].get("total_kw") or 0.0)),
+        key=lambda m: abs(float(snapshots[m].get("total_kw") or 0.0)),
         default=DEVICES[0]["name"],
     )
 
+    # Machine selector at the top — controls both the graph and the data table
+    machine_names = list(MACHINE_TABLE_MAPPING.keys())
+    selected = st.selectbox(
+        "Machine",
+        options=machine_names,
+        index=machine_names.index(busiest) if busiest in machine_names else 0,
+        key="live_machine_select",
+    )
+
+    # Streaming graph — starts on the selected machine
     components.html(
-        build_streaming_dashboard_html(default_machine, get_lan_ip(), STREAM_PORT, view_mode="live"),
+        build_streaming_dashboard_html(selected, get_lan_ip(), STREAM_PORT, view_mode="live"),
         height=1320,
         scrolling=False,
     )
 
     st.divider()
-    st.subheader("Live Readings")
 
-    machine_names = list(MACHINE_TABLE_MAPPING.keys())
-    selected = st.selectbox(
-        "Machine",
-        options=machine_names,
-        index=machine_names.index(default_machine) if default_machine in machine_names else 0,
-        key="data_panel_machine",
-        label_visibility="collapsed",
-    )
-
+    # Live data table — only the selected machine, refreshes every 2 s
     _data_panel(selected)
 
     close_shell()

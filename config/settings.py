@@ -106,3 +106,9 @@ CONNECT_TIMEOUT = 3
 MAX_RETRY_WAIT = 60
 HANDSHAKE_INTERVAL_SECONDS = 15
 PORT_PROBE_INTERVAL_SECONDS = 30
+
+# Global fallback thresholds used when a machine has no entry in thresholds.json
+# or no per-device override in the DEVICES list below.
+# kW < IDLE  → IDLE  |  kW > WORKING → WORKING  |  between → TRANSITION
+DEFAULT_IDLE_THRESHOLD_KW = 2.82
+DEFAULT_WORKING_THRESHOLD_KW = 3.05

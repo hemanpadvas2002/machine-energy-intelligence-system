@@ -1,0 +1,25 @@
+{
+  "_note": "Per-machine IDLE/WORKING thresholds. Edit here or via the Settings page. Fetcher reloads every 30 s — no restart needed.",
+  "_calibration_status": {
+    "Galaxy_CNC":          "NEEDS CALIBRATION — observed idling at ~0 kW/240 V, but no confirmed working-load reading available.",
+    "LML_GRINDMASTER_CNC": "NEEDS CALIBRATION — no historical working-load data collected yet.",
+    "AGI_ROBO_CNC":        "NEEDS CALIBRATION — no historical working-load data collected yet.",
+    "Ace_Vantage_CNC":     "NEEDS CALIBRATION — no historical working-load data collected yet."
+  },
+  "Galaxy_CNC": {
+    "idle_threshold_kw": 2.82,
+    "working_threshold_kw": 3.05
+  },
+  "LML_GRINDMASTER_CNC": {
+    "idle_threshold_kw": 2.82,
+    "working_threshold_kw": 3.05
+  },
+  "AGI_ROBO_CNC": {
+    "idle_threshold_kw": 2.82,
+    "working_threshold_kw": 3.05
+  },
+  "Ace_Vantage_CNC": {
+    "idle_threshold_kw": 2.82,
+    "working_threshold_kw": 3.05
+  }
+}

@@ -455,118 +455,150 @@ def build_historical_dashboard_html(metric_title: str, unit: str, engine: str, p
     """
 
 
-ctrl_cols = st.columns([1.5, 1.5, 1.2, 1.2, 2.6])
+# ── session-state defaults ────────────────────────────────────────────────────
+_MACHINE_KEYS = list(MACHINE_TABLE_MAPPING.keys())
+_METRIC_KEYS = list(METRIC_OPTIONS.keys())
+if "pd_machine" not in st.session_state:
+    st.session_state["pd_machine"] = _MACHINE_KEYS[0]
+if "pd_metric" not in st.session_state:
+    st.session_state["pd_metric"] = _METRIC_KEYS[0]
+if "pd_start" not in st.session_state:
+    st.session_state["pd_start"] = (pd.Timestamp.now() - pd.Timedelta(days=1)).date()
+if "pd_end" not in st.session_state:
+    st.session_state["pd_end"] = pd.Timestamp.now().date()
+if "pd_results" not in st.session_state:
+    st.session_state["pd_results"] = None
+
+# ── controls ──────────────────────────────────────────────────────────────────
+ctrl_cols = st.columns([1.5, 1.5, 1.2, 1.2, 1.0])
 with ctrl_cols[0]:
-    machine = st.selectbox("Select Machine", list(MACHINE_TABLE_MAPPING.keys()), index=0)
+    st.selectbox("Select Machine", _MACHINE_KEYS, key="pd_machine")
 with ctrl_cols[1]:
-    metric_label = st.selectbox("Select Data View", list(METRIC_OPTIONS.keys()), index=0)
-
-# Default to last 24 hours; user can widen the range manually
-default_end = pd.Timestamp.now().date()
-default_start = (pd.Timestamp.now() - pd.Timedelta(days=1)).date()
-
+    st.selectbox("Select Data View", _METRIC_KEYS, key="pd_metric")
 with ctrl_cols[2]:
-    start_date = st.date_input("From Date", value=default_start)
-
+    st.date_input("From Date", key="pd_start")
 with ctrl_cols[3]:
-    end_date = st.date_input("To Date", value=default_end)
+    st.date_input("To Date", key="pd_end")
+with ctrl_cols[4]:
+    st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+    apply_clicked = st.button("Apply", use_container_width=True, type="primary")
 
-metric_config = METRIC_OPTIONS[metric_label]
-metric_column = metric_config["column"]
-metric_unit = metric_config["unit"]
+# ── query (only on Apply click) ───────────────────────────────────────────────
+if apply_clicked:
+    _machine = st.session_state["pd_machine"]
+    _metric_label = st.session_state["pd_metric"]
+    _start_date = st.session_state["pd_start"]
+    _end_date = st.session_state["pd_end"]
+    _metric_config = METRIC_OPTIONS[_metric_label]
+    _metric_column = _metric_config["column"]
+    _metric_unit = _metric_config["unit"]
 
-df = fetch_data_by_date_range(MACHINE_TABLE_MAPPING[machine], start_date, end_date)
+    with st.spinner(f"Querying {_machine}…"):
+        df = fetch_data_by_date_range(MACHINE_TABLE_MAPPING[_machine], _start_date, _end_date)
 
-if df.empty:
-    st.warning(f"No historical telemetry found for {machine} within the selected date range.")
-    close_shell()
-    st.stop()
+    if df.empty:
+        st.session_state["pd_results"] = {
+            "error": f"No historical telemetry found for {_machine} within the selected date range."
+        }
+    else:
+        filtered_df = filter_valid_meter_rows(df)
+        if filtered_df.empty:
+            st.session_state["pd_results"] = {
+                "error": "No valid meter packets found. All-zero/offline packets are ignored."
+            }
+        elif _metric_column not in filtered_df.columns:
+            st.session_state["pd_results"] = {
+                "error": f"{_metric_label} is not available for {_machine}."
+            }
+        else:
+            series_df = filtered_df[["timestamp", _metric_column]].copy()
+            series_df[_metric_column] = pd.to_numeric(series_df[_metric_column], errors="coerce").fillna(0.0)
+            timestamps = series_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S").tolist()
+            values = series_df[_metric_column].astype(float).tolist()
+            result = get_matlab_analytics_service().process_series(
+                timestamps, values, sample_interval=1.0,
+                cache_key=("historical", _machine, _metric_column,
+                           timestamps[-1] if timestamps else "empty", len(values)),
+            )
 
-filtered_df = filter_valid_meter_rows(df)
+            MAX_VISUAL_POINTS = 3000
+            vis_ts = result.timestamps
+            vis_raw = result.raw
+            vis_filt = result.filtered
+            vis_smooth = result.smoothed
+            if len(vis_raw) > MAX_VISUAL_POINTS:
+                step = len(vis_raw) // MAX_VISUAL_POINTS
+                vis_ts = vis_ts[::step][:MAX_VISUAL_POINTS]
+                vis_raw = vis_raw[::step][:MAX_VISUAL_POINTS]
+                vis_filt = vis_filt[::step][:MAX_VISUAL_POINTS]
+                vis_smooth = vis_smooth[::step][:MAX_VISUAL_POINTS]
 
-if filtered_df.empty:
-    st.warning("No valid meter packets found for the selected timeline. All-zero/offline packets are ignored.")
-    close_shell()
-    st.stop()
+            vis_fft_freq = result.fft_frequency
+            vis_fft_mag = result.fft_magnitude
+            if len(vis_fft_mag) > MAX_VISUAL_POINTS:
+                fft_step = len(vis_fft_mag) // MAX_VISUAL_POINTS
+                vis_fft_freq = vis_fft_freq[::fft_step][:MAX_VISUAL_POINTS]
+                vis_fft_mag = vis_fft_mag[::fft_step][:MAX_VISUAL_POINTS]
 
-if metric_column not in filtered_df.columns:
-    st.warning(f"{metric_label} is not available for {machine}.")
-    close_shell()
-    st.stop()
+            modes = compute_modes(result.filtered or result.raw)
+            zero_only = bool(values) and all(abs(float(v)) < 1e-9 for v in values)
 
-series_df = filtered_df[["timestamp", metric_column]].copy()
-series_df[metric_column] = pd.to_numeric(series_df[metric_column], errors="coerce").fillna(0.0)
+            table_snap = filtered_df.tail(50).copy()
+            table_snap["timestamp"] = table_snap["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
-timestamps = series_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S").tolist()
-values = series_df[metric_column].astype(float).tolist()
-result = get_matlab_analytics_service().process_series(
-    timestamps,
-    values,
-    sample_interval=1.0,
-    cache_key=("historical", machine, metric_column, timestamps[-1] if timestamps else "empty", len(values)),
-)
+            st.session_state["pd_results"] = {
+                "metric_label": _metric_label,
+                "metric_config": _metric_config,
+                "metric_unit": _metric_unit,
+                "avg": series_df[_metric_column].mean(),
+                "peak": series_df[_metric_column].max(),
+                "count": len(series_df),
+                "table_df": table_snap,
+                "html_payload": {
+                    "timestamps": vis_ts,
+                    "values": vis_raw,
+                    "filtered": vis_filt,
+                    "smoothed": vis_smooth,
+                    "fft_frequency": vis_fft_freq,
+                    "fft": vis_fft_mag,
+                    "modes": modes,
+                    "zero_only_signal": zero_only,
+                },
+            }
 
-# Downsample for visualization if dataset is too large (prevents browser/component crashes)
-MAX_VISUAL_POINTS = 3000
-visual_timestamps = result.timestamps
-visual_raw = result.raw
-visual_filtered = result.filtered
-visual_smoothed = result.smoothed
+# ── render stored results ─────────────────────────────────────────────────────
+res = st.session_state.get("pd_results")
+if res is None:
+    st.info("Select your machine, metric, and date range, then click **Apply**.")
+elif "error" in res:
+    st.warning(res["error"])
+else:
+    _unit_suffix = (" " + res["metric_unit"]) if res["metric_unit"] else ""
+    metric_cols = st.columns(3)
+    with metric_cols[0]:
+        render_metric_card(
+            f"{res['metric_label']} Average",
+            f'{res["avg"]:.2f}{_unit_suffix}',
+        )
+    with metric_cols[1]:
+        render_metric_card(
+            f"{res['metric_label']} Peak",
+            f'{res["peak"]:.2f}{_unit_suffix}',
+        )
+    with metric_cols[2]:
+        render_metric_card("Samples Loaded", str(res["count"]))
 
-if len(visual_raw) > MAX_VISUAL_POINTS:
-    step = len(visual_raw) // MAX_VISUAL_POINTS
-    visual_timestamps = visual_timestamps[::step][:MAX_VISUAL_POINTS]
-    visual_raw = visual_raw[::step][:MAX_VISUAL_POINTS]
-    visual_filtered = visual_filtered[::step][:MAX_VISUAL_POINTS]
-    visual_smoothed = visual_smoothed[::step][:MAX_VISUAL_POINTS]
-
-visual_fft_frequency = result.fft_frequency
-visual_fft_magnitude = result.fft_magnitude
-if len(visual_fft_magnitude) > MAX_VISUAL_POINTS:
-    fft_step = len(visual_fft_magnitude) // MAX_VISUAL_POINTS
-    visual_fft_frequency = visual_fft_frequency[::fft_step][:MAX_VISUAL_POINTS]
-    visual_fft_magnitude = visual_fft_magnitude[::fft_step][:MAX_VISUAL_POINTS]
-
-modes = compute_modes(result.filtered or result.raw)
-zero_only_signal = bool(values) and all(abs(float(value)) < 1e-9 for value in values)
-
-metric_cols = st.columns(3)
-with metric_cols[0]:
-    render_metric_card(
-        f"{metric_label} Average",
-        f'{series_df[metric_column].mean():.2f}{f" {metric_unit}" if metric_unit else ""}',
+    components.html(
+        build_historical_dashboard_html(
+            metric_title=res["metric_config"]["title"],
+            unit=res["metric_unit"],
+            engine="",
+            payload=res["html_payload"],
+        ),
+        height=760,
+        scrolling=False,
     )
-with metric_cols[1]:
-    render_metric_card(
-        f"{metric_label} Peak",
-        f'{series_df[metric_column].max():.2f}{f" {metric_unit}" if metric_unit else ""}',
-    )
-with metric_cols[2]:
-    render_metric_card("Samples Loaded", str(len(series_df)))
 
-components.html(
-    build_historical_dashboard_html(
-        metric_title=metric_config["title"],
-        unit=metric_unit,
-        engine=result.engine,
-        payload={
-            "timestamps": visual_timestamps,
-            "values": visual_raw,
-            "filtered": visual_filtered,
-            "smoothed": visual_smoothed,
-            "fft_frequency": visual_fft_frequency,
-            "fft": visual_fft_magnitude,
-            "modes": modes,
-            "zero_only_signal": zero_only_signal,
-        },
-    ),
-    height=760,
-    scrolling=False,
-)
-
-table_df = filtered_df.tail(50).copy()
-
-table_df["timestamp"] = table_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-st.dataframe(table_df, use_container_width=True, hide_index=True)
+    st.dataframe(res["table_df"], use_container_width=True, hide_index=True)
 
 close_shell()

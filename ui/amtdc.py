@@ -5,6 +5,7 @@ NAV_ITEMS = [
     ("Dashboard", "/", "Main Navigation"),
     ("Live Data", "/Live_Data", None),
     ("Past Data", "/Machine_Data", None),
+    ("Config", "/Config", None),
     ("Add Machine", "/Add_Machine", None),
 ]
 

@@ -1,0 +1,19 @@
+{
+  "_note": "Runtime-editable machine metadata. IP/port are managed in config/settings.py DEVICES.",
+  "Galaxy_CNC": {
+    "description": "Horizontal milling CNC — Station A",
+    "notes": ""
+  },
+  "LML_GRINDMASTER_CNC": {
+    "description": "Grinding CNC — Station B",
+    "notes": ""
+  },
+  "AGI_ROBO_CNC": {
+    "description": "Robotic CNC — Station C",
+    "notes": ""
+  },
+  "Ace_Vantage_CNC": {
+    "description": "Vantage CNC — Station D",
+    "notes": ""
+  }
+}

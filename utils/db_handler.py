@@ -66,19 +66,35 @@ def init_postgres_db():
             conn.close()
 
 def fetch_timestamp_range(table):
-    """Fetches the min and max timestamp from a specific PostgreSQL table."""
+    """Fetches the min and max timestamp from a specific PostgreSQL table, with SQLite fallback."""
     conn = None
     try:
         conn = _get_postgres_conn_with_retry()
         cursor = conn.cursor()
-        query = f"SELECT MIN(timestamp), MAX(timestamp) FROM {table}"
-        cursor.execute(query)
+        cursor.execute(f"SELECT MIN(timestamp), MAX(timestamp) FROM {table}")
         result = cursor.fetchone()
         cursor.close()
-        conn.close()
-        return result # (min, max)
+        if result and result[0] is not None:
+            return pd.Timestamp(result[0]), pd.Timestamp(result[1])
+        return None, None
     except Exception as e:
-        logger.warning(f"PostgreSQL bounds fetch failed for {table}. Error: {e}")
+        logger.warning(f"PostgreSQL bounds fetch failed for {table}, falling back to SQLite. Error: {e}")
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                cursor_sq = conn_sqlite.cursor()
+                cursor_sq.execute(f"SELECT MIN(timestamp), MAX(timestamp) FROM {sqlite_table}")
+                result = cursor_sq.fetchone()
+                cursor_sq.close()
+                if result and result[0] is not None:
+                    return pd.Timestamp(result[0]), pd.Timestamp(result[1])
+            except Exception as sq_exc:
+                logger.warning("SQLite bounds fallback failed for %s: %s", sqlite_table, sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
         return None, None
     finally:
         if conn is not None and not conn.closed:

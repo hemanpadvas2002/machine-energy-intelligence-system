@@ -311,7 +311,7 @@ def build_streaming_dashboard_html(
           <div class="panel">
             <div class="section-label">Fleet Overview</div>
             <h3>All Machines</h3>
-            <div id="machineList" class="mode-list"></div>
+            <div id="machineList" class="mode-list" style="max-height:300px;overflow-y:auto;padding-right:4px"></div>
           </div>
         </section>
         {'<section class="panel"><div class="section-label">Unit Operational Status</div><h3 id="rawTableHeading">Live Machine State</h3><div style="overflow:auto;max-height:340px"><table class="status-table"><thead><tr><th>Timestamp</th><th>Voltage (V)</th><th>Current (A)</th><th>Power (kW)</th><th>Energy (kWh)</th><th>State</th></tr></thead><tbody id="rawTableBody"></tbody></table></div></section>' if view_mode != "live" else '<div id="rawTableBody" style="display:none"></div>'}
@@ -447,10 +447,11 @@ def build_streaming_dashboard_html(
 
         function updateKpis(kpis) {{
           if (state.viewMode === 'live') return;
-          document.getElementById('kpi-total-energy').textContent = Number(kpis.total_energy || 0).toFixed(1) + ' kWh';
+          const noData = !kpis || (kpis.active_machines === 0 && kpis.total_energy === 0 && kpis.peak_demand === 0);
+          document.getElementById('kpi-total-energy').textContent = noData ? '— kWh' : (Number(kpis.total_energy || 0).toFixed(1) + ' kWh');
           document.getElementById('kpi-active-machines').textContent = `${{kpis.active_machines ?? '—'}}/${{kpis.machine_count ?? '—'}}`;
-          document.getElementById('kpi-average-load').textContent = Number(kpis.average_load || 0).toFixed(3) + ' kW';
-          document.getElementById('kpi-peak-demand').textContent = Number(kpis.peak_demand || 0).toFixed(3) + ' kW';
+          document.getElementById('kpi-average-load').textContent = noData ? '— kW' : (Number(kpis.average_load || 0).toFixed(3) + ' kW');
+          document.getElementById('kpi-peak-demand').textContent = noData ? '— kW' : (Number(kpis.peak_demand || 0).toFixed(3) + ' kW');
         }}
 
         function updateRealtimeKpis(payload) {{
@@ -499,10 +500,13 @@ def build_streaming_dashboard_html(
             const stateText = m.online ? (working ? 'WORKING' : 'IDLE') : 'OFFLINE';
             const borderColor = m.online ? (working ? '#0b7171' : '#8ba0b8') : '#cf2e2e';
             const label = (m.machine || '').replace(/_/g, ' ');
+            const hasSignal = m.online && (m.avg_voltage_ln || 0) > 0;
+            const voltageStr = hasSignal ? (Number(m.avg_voltage_ln).toFixed(1) + ' V') : '—';
+            const kwStr = hasSignal ? (Number(m.load_kw || 0).toFixed(3) + ' kW') : '—';
             return `<div class="mode-row" style="border-left-color:${{borderColor}}">
               <div class="section-label">${{label}}</div>
               <div class="mode-head">
-                <strong>${{Number(m.avg_voltage_ln || 0).toFixed(1)}} V &nbsp; ${{Number(m.load_kw || 0).toFixed(3)}} kW</strong>
+                <strong>${{voltageStr}} &nbsp; ${{kwStr}}</strong>
                 <span class="state-badge ${{badgeClass}}">${{stateText}}</span>
               </div>
             </div>`;

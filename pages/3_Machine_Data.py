@@ -7,7 +7,7 @@ import streamlit.components.v1 as components
 from config.settings import MACHINE_TABLE_MAPPING
 from services.matlab_analytics import get_matlab_analytics_service
 from ui.amtdc import apply_page_config, close_shell, inject_styles, render_shell, render_sidebar
-from utils.db_handler import fetch_data_by_date_range, fetch_timestamp_range
+from utils.db_handler import fetch_data_by_date_range
 
 
 apply_page_config("AMTDC Past Data")
@@ -461,10 +461,9 @@ with ctrl_cols[0]:
 with ctrl_cols[1]:
     metric_label = st.selectbox("Select Data View", list(METRIC_OPTIONS.keys()), index=0)
 
-# Fetch min/max dates for defaults efficiently
-min_ts, max_ts = fetch_timestamp_range(MACHINE_TABLE_MAPPING[machine])
-default_start = min_ts.date() if (min_ts and not pd.isna(min_ts)) else pd.Timestamp.now().date()
-default_end = max_ts.date() if (max_ts and not pd.isna(max_ts)) else pd.Timestamp.now().date()
+# Default to last 24 hours; user can widen the range manually
+default_end = pd.Timestamp.now().date()
+default_start = (pd.Timestamp.now() - pd.Timedelta(days=1)).date()
 
 with ctrl_cols[2]:
     start_date = st.date_input("From Date", value=default_start)

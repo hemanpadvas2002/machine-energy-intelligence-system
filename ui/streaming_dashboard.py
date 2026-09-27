@@ -245,6 +245,10 @@ def build_streaming_dashboard_html(
           border-collapse: collapse;
         }}
         .status-table th {{
+          position: sticky;
+          top: 0;
+          background: var(--panel);
+          z-index: 2;
           text-align: left;
           color: var(--muted);
           text-transform: uppercase;

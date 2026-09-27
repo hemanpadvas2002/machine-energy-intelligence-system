@@ -1,16 +1,11 @@
-from config.settings import DEVICES
-
 
 def build_streaming_dashboard_html(
     default_machine: str,
     fallback_host: str,
     api_port: int,
     view_mode: str = "dashboard",
+    default_parameter: str = "avg_voltage_ln",
 ) -> str:
-    machine_options = "".join(
-        f'<option value="{machine}" {"selected" if machine == default_machine else ""}>{machine}</option>'
-        for machine in [device["name"] for device in DEVICES]
-    )
     live_kpi_markup = """
         <section class="kpi-grid">
           <div class="panel"><div id="kpi-label-1" class="metric-label">Live Raw Value</div><div id="kpi-total-energy" class="metric-value">0.00</div><div id="kpi-foot-1" class="metric-foot">Current sample</div></div>
@@ -283,16 +278,6 @@ def build_streaming_dashboard_html(
     <body>
       <div class="dashboard">
         <div class="controls">
-          <div class="control-group">
-            <select id="machineSelect" class="control-select">{machine_options}</select>
-            <select id="parameterSelect" class="control-select">
-              <option value="avg_voltage_ln" selected>Avg Voltage LN</option>
-              <option value="avg_current">Avg Current</option>
-              <option value="total_kw">Total KW</option>
-              <option value="avg_voltage_ll">Avg Voltage LL</option>
-              <option value="total_net_kwh">Total Net KWh</option>
-            </select>
-          </div>
           <div id="engineBadge" class="engine-badge">Analytics Engine</div>
         </div>
         {live_kpi_markup if view_mode == "live" else dashboard_kpi_markup}
@@ -335,7 +320,7 @@ def build_streaming_dashboard_html(
         const apiBaseUrl = resolveApiBaseUrl();
         const state = {{
           machine: "{default_machine}",
-          parameter: "avg_voltage_ln",
+          parameter: "{default_parameter}",
           viewMode: "{view_mode}",
           variant: "all",
           chart: null,
@@ -698,20 +683,6 @@ def build_streaming_dashboard_html(
           state.chart.update('none');
           state.fftChart.update('none');
         }}
-
-        document.getElementById('machineSelect').addEventListener('change', (event) => {{
-          state.machine = event.target.value;
-          resetCharts();
-          refreshDashboard();
-          refreshAnalytics();
-          refreshRawTable();
-        }});
-
-        document.getElementById('parameterSelect').addEventListener('change', (event) => {{
-          state.parameter = event.target.value;
-          resetCharts();
-          refreshAnalytics();
-        }});
 
         document.querySelectorAll('.variant-pill').forEach((button) => {{
           button.addEventListener('click', () => setVariant(button.dataset.variant));

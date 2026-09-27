@@ -5,6 +5,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from config.settings import ACTIVE_MACHINE_NAMES, DEVICES, MACHINE_TABLE_MAPPING, SQLITE_DB_PATH
+from utils.machine_registry import get_all_machines
 from services.telemetry_runtime import ensure_telemetry_server_process
 from services.telemetry_stream import STREAM_PORT
 from ui.amtdc import apply_page_config, close_shell, inject_styles, render_shell, render_sidebar
@@ -40,7 +41,7 @@ def _fetch_last_rows(table: str, n: int = 30) -> pd.DataFrame:
 
 @st.fragment(run_every=2)
 def _data_panel(machine: str) -> None:
-    table = MACHINE_TABLE_MAPPING.get(machine)
+    table = get_all_machines().get(machine)
     df = _fetch_last_rows(table) if table else pd.DataFrame()
 
     if df.empty:
@@ -89,19 +90,39 @@ def main():
         default=DEVICES[0]["name"],
     )
 
-    # Machine selector at the top — controls both the graph and the data table
-    machine_names = list(MACHINE_TABLE_MAPPING.keys())
-    selected = st.selectbox(
-        "Machine",
-        options=machine_names,
-        index=machine_names.index(busiest) if busiest in machine_names else 0,
-        key="live_machine_select",
-    )
+    # Machine + parameter selectors side by side — both control the live graph
+    _PARAM_OPTIONS = {
+        "Avg Voltage LN": "avg_voltage_ln",
+        "Avg Current": "avg_current",
+        "Total KW": "total_kw",
+        "Avg Voltage LL": "avg_voltage_ll",
+        "Total Net KWh": "total_net_kwh",
+    }
+    machine_names = list(get_all_machines().keys())
+    col_machine, col_param = st.columns([1, 1])
+    with col_machine:
+        selected = st.selectbox(
+            "Machine",
+            options=machine_names,
+            index=machine_names.index(busiest) if busiest in machine_names else 0,
+            key="live_machine_select",
+        )
+    with col_param:
+        selected_param_label = st.selectbox(
+            "Data View",
+            options=list(_PARAM_OPTIONS.keys()),
+            key="live_param_select",
+        )
+    selected_param = _PARAM_OPTIONS[selected_param_label]
 
-    # Streaming graph — starts on the selected machine
+    # Streaming graph — starts on the selected machine and parameter
     components.html(
-        build_streaming_dashboard_html(selected, get_lan_ip(), STREAM_PORT, view_mode="live"),
-        height=1320,
+        build_streaming_dashboard_html(
+            selected, get_lan_ip(), STREAM_PORT,
+            view_mode="live",
+            default_parameter=selected_param,
+        ),
+        height=1020,
         scrolling=False,
     )
 

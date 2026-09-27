@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from config.settings import MACHINE_TABLE_MAPPING
+from utils.machine_registry import get_all_machines
 from services.matlab_analytics import get_matlab_analytics_service
 from ui.amtdc import apply_page_config, close_shell, inject_styles, render_shell, render_sidebar
 from utils.db_handler import fetch_data_by_date_range
@@ -456,7 +456,7 @@ def build_historical_dashboard_html(metric_title: str, unit: str, engine: str, p
 
 
 # ── session-state defaults ────────────────────────────────────────────────────
-_MACHINE_KEYS = list(MACHINE_TABLE_MAPPING.keys())
+_MACHINE_KEYS = list(get_all_machines().keys())
 _METRIC_KEYS = list(METRIC_OPTIONS.keys())
 if "pd_machine" not in st.session_state:
     st.session_state["pd_machine"] = _MACHINE_KEYS[0]
@@ -481,7 +481,7 @@ with ctrl_cols[3]:
     st.date_input("To Date", key="pd_end")
 with ctrl_cols[4]:
     st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-    apply_clicked = st.button("Apply", use_container_width=True, type="primary")
+    apply_clicked = st.button("Apply", type="primary")
 
 # ── query (only on Apply click) ───────────────────────────────────────────────
 if apply_clicked:
@@ -494,7 +494,7 @@ if apply_clicked:
     _metric_unit = _metric_config["unit"]
 
     with st.spinner(f"Querying {_machine}…"):
-        df = fetch_data_by_date_range(MACHINE_TABLE_MAPPING[_machine], _start_date, _end_date)
+        df = fetch_data_by_date_range(get_all_machines()[_machine], _start_date, _end_date)
 
     if df.empty:
         st.session_state["pd_results"] = {

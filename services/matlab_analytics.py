@@ -118,7 +118,9 @@ class MatlabAnalyticsService:
 
         filtered = list(engine.sgolayfilt(matlab_values, poly, window))
         smoothed = list(engine.smoothdata(matlab_values, "gaussian", max(3, window)))
-        fft_complex = np.array(engine.fft(matlab_values)).astype(complex)
+        mean_val = float(np.mean([float(v) for v in values]))
+        detrended_values = matlab.double([float(v) - mean_val for v in values])
+        fft_complex = np.array(engine.fft(detrended_values)).astype(complex)
         fft_magnitude = np.abs(fft_complex[: n // 2]).tolist()
         fft_frequency = np.fft.rfftfreq(n, d=sample_interval).tolist()[: len(fft_magnitude)]
 
@@ -146,7 +148,7 @@ class MatlabAnalyticsService:
             filtered = savgol_filter(raw, window_length=window, polyorder=poly, mode="interp")
             smoothed = gaussian_filter1d(raw, sigma=1.2)
 
-        fft_values = np.abs(np.fft.rfft(raw))
+        fft_values = np.abs(np.fft.rfft(raw - np.mean(raw)))
         fft_frequency = np.fft.rfftfreq(n, d=sample_interval)
 
         return AnalyticsResult(

@@ -219,11 +219,19 @@ def _build_series(machine, parameter="total_kw", window_size=WINDOW_SIZE):
         sample_interval=1.0,
         cache_key=cache_key,
     )
+    _zero_only = bool(values) and all(value == 0.0 for value in values)
+    if values and not _zero_only:
+        _mean = sum(values) / len(values)
+        _std = (sum((v - _mean) ** 2 for v in values) / len(values)) ** 0.5
+        _constant = bool(_std < 0.05)
+    else:
+        _constant = False
     payload = {
         "machine": machine,
         "parameter": parameter,
         "generated_at": datetime.utcnow().isoformat(),
-        "zero_only_signal": bool(values) and all(value == 0.0 for value in values),
+        "zero_only_signal": _zero_only,
+        "constant_signal": _constant,
         "no_valid_telemetry": False,
         **result.to_dict(),
     }

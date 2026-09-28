@@ -290,13 +290,14 @@ def build_streaming_dashboard_html(
             <div id="zeroWarning" class="warning"></div>
             <div class="fft-wrap">
               <div class="section-label">FFT Spectrum</div>
+              <div id="fftPlaceholder" class="warning" style="display:none;"></div>
               <canvas id="fftChart"></canvas>
             </div>
           </div>
-          <div class="panel">
+          <div class="panel" style="display:flex;flex-direction:column;">
             <div class="section-label">Fleet Overview</div>
             <h3>All Machines</h3>
-            <div id="machineList" class="mode-list" style="max-height:300px;overflow-y:auto;padding-right:4px"></div>
+            <div id="machineList" class="mode-list" style="flex:1;overflow-y:auto;min-height:0;padding-right:4px"></div>
           </div>
         </section>
         {'<section class="panel"><div class="section-label">Unit Operational Status</div><h3 id="rawTableHeading">Live Machine State</h3><div style="overflow:auto;max-height:340px"><table class="status-table"><thead><tr><th>Timestamp</th><th>Voltage (V)</th><th>Current (A)</th><th>Power (kW)</th><th>Energy (kWh)</th><th>State</th></tr></thead><tbody id="rawTableBody"></tbody></table></div></section>' if view_mode != "live" else '<div id="rawTableBody" style="display:none"></div>'}
@@ -528,7 +529,10 @@ def build_streaming_dashboard_html(
             warning.textContent = `Waiting for telemetry from ${{state.machine}}. The machine may be starting up or not yet connected.`;
           }} else if (payload.zero_only_signal) {{
             warning.style.display = 'block';
-            warning.textContent = `${{state.machine}} is currently idle or offline for ${{state.parameter}}. The timeline is maintained with 0.0 values.`;
+            warning.textContent = `${{state.machine}} is reporting zero for ${{state.parameter}} — machine is powered but idle (no load on this channel).`;
+          }} else if (payload.constant_signal) {{
+            warning.style.display = 'block';
+            warning.textContent = `${{state.parameter}} is near-constant — expected for cumulative metrics (e.g. kWh) when the machine is in standby.`;
           }} else {{
             warning.style.display = 'none';
             warning.textContent = '';
@@ -608,8 +612,17 @@ def build_streaming_dashboard_html(
         }}
 
         function updateFft(payload) {{
+          const fftData = payload.fft || [];
+          const hasContent = fftData.length > 0 && fftData.some((v) => v > 1e-3);
+          const placeholder = document.getElementById('fftPlaceholder');
+          const canvas = document.getElementById('fftChart');
+          if (placeholder) {{
+            placeholder.style.display = hasContent ? 'none' : 'block';
+            if (!hasContent) placeholder.textContent = 'No significant frequency content — signal is near-constant or machine is in standby.';
+          }}
+          if (canvas) canvas.style.display = hasContent ? 'block' : 'none';
           state.fftChart.data.labels = (payload.fft_frequency || []).map((value) => Number(value).toFixed(2));
-          state.fftChart.data.datasets[0].data = payload.fft || [];
+          state.fftChart.data.datasets[0].data = hasContent ? fftData : [];
           state.fftChart.update('active');
           updateEngine(payload.engine);
         }}

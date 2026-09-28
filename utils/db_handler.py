@@ -66,19 +66,35 @@ def init_postgres_db():
             conn.close()
 
 def fetch_timestamp_range(table):
-    """Fetches the min and max timestamp from a specific PostgreSQL table."""
+    """Fetches the min and max timestamp from a specific PostgreSQL table, with SQLite fallback."""
     conn = None
     try:
         conn = _get_postgres_conn_with_retry()
         cursor = conn.cursor()
-        query = f"SELECT MIN(timestamp), MAX(timestamp) FROM {table}"
-        cursor.execute(query)
+        cursor.execute(f"SELECT MIN(timestamp), MAX(timestamp) FROM {table}")
         result = cursor.fetchone()
         cursor.close()
-        conn.close()
-        return result # (min, max)
+        if result and result[0] is not None:
+            return pd.Timestamp(result[0]), pd.Timestamp(result[1])
+        return None, None
     except Exception as e:
-        logger.warning(f"PostgreSQL bounds fetch failed for {table}. Error: {e}")
+        logger.warning(f"PostgreSQL bounds fetch failed for {table}, falling back to SQLite. Error: {e}")
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                cursor_sq = conn_sqlite.cursor()
+                cursor_sq.execute(f"SELECT MIN(timestamp), MAX(timestamp) FROM {sqlite_table}")
+                result = cursor_sq.fetchone()
+                cursor_sq.close()
+                if result and result[0] is not None:
+                    return pd.Timestamp(result[0]), pd.Timestamp(result[1])
+            except Exception as sq_exc:
+                logger.warning("SQLite bounds fallback failed for %s: %s", sqlite_table, sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
         return None, None
     finally:
         if conn is not None and not conn.closed:
@@ -296,7 +312,7 @@ def fetch_latest_machine_snapshots():
                 cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{sqlite_table}';")
                 if not cursor.fetchone():
                     continue
-                    
+
                 df = pd.read_sql_query(query, conn_sqlite)
                 if df.empty:
                     continue
@@ -313,6 +329,82 @@ def fetch_latest_machine_snapshots():
     finally:
         if conn is not None and not conn.closed:
             conn.close()
+
+
+def fetch_latest_valid_snapshots():
+    """Fetches the latest NON-ZERO telemetry row per machine for display purposes.
+
+    Zero/diagnostic packets are excluded so callers show the last real reading,
+    matching what the timeseries graph displays via _filter_valid_meter_rows().
+    Falls back to fetch_latest_machine_snapshots() if no non-zero row exists.
+    """
+    _NONZERO_WHERE = (
+        "(ABS(COALESCE(avg_voltage_ln, 0)) + ABS(COALESCE(avg_voltage_ll, 0)) "
+        "+ ABS(COALESCE(avg_current, 0)) + ABS(COALESCE(total_kw, 0)) "
+        "+ ABS(COALESCE(total_net_kwh, 0))) > 0"
+    )
+    conn = None
+    snapshots = {}
+    try:
+        conn = _get_postgres_conn_with_retry()
+        for machine_name, table in MACHINE_TABLE_MAPPING.items():
+            query = f"""
+                SELECT timestamp, avg_voltage_ln, avg_voltage_ll, avg_current, total_kw, total_net_kwh
+                FROM {table}
+                WHERE {_NONZERO_WHERE}
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """
+            df = pd.read_sql_query(query, conn)
+            if df.empty:
+                continue
+            row = df.iloc[0].to_dict()
+            row["timestamp"] = pd.to_datetime(row["timestamp"])
+            snapshots[machine_name] = row
+        return snapshots
+    except Exception as exc:
+        logger.warning("fetch_latest_valid_snapshots PG failed, using latest-any fallback: %s", exc)
+        return fetch_latest_machine_snapshots()
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
+
+def fetch_24h_peak_kw(table):
+    """Returns MAX(ABS(total_kw)) recorded in the last 24 hours for the given table."""
+    conn = None
+    try:
+        conn = _get_postgres_conn_with_retry()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT MAX(ABS(total_kw)) FROM {table} WHERE timestamp >= NOW() - INTERVAL '24 hours'"
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        return float(result[0]) if result and result[0] is not None else 0.0
+    except Exception as exc:
+        logger.warning("Peak kW 24h fetch failed for %s (PostgreSQL): %s", table, exc)
+        device_name = next((k for k, v in MACHINE_TABLE_MAPPING.items() if v == table), None)
+        if device_name:
+            sqlite_table = sanitize_sqlite_table_name(device_name)
+            try:
+                conn_sqlite = get_sqlite_conn()
+                cursor_sq = conn_sqlite.cursor()
+                cursor_sq.execute(
+                    f"SELECT MAX(ABS(total_kw)) FROM {sqlite_table} WHERE timestamp >= datetime('now', '-24 hours')"
+                )
+                result = cursor_sq.fetchone()
+                cursor_sq.close()
+                return float(result[0]) if result and result[0] is not None else 0.0
+            except Exception as sq_exc:
+                logger.error("SQLite peak kW 24h fallback error: %s", sq_exc)
+            finally:
+                if 'conn_sqlite' in locals() and conn_sqlite:
+                    conn_sqlite.close()
+        return 0.0
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
+
 
 def insert_to_postgres(table, data_packet, timestamp):
     """Inserts one record into a PostgreSQL table."""

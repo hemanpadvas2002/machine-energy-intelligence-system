@@ -1,4 +1,6 @@
 import datetime
+import json
+import os
 import time
 import logging
 import threading
@@ -18,9 +20,53 @@ device_framers = {}
 from config.settings import (
     DEVICES, REGISTER_MAPPING, DB_COLUMNS, MACHINE_TABLE_MAPPING,
     SLAVE_ID, SLEEP_INTERVAL, CONNECT_TIMEOUT, MAX_RETRY_WAIT,
-    HANDSHAKE_INTERVAL_SECONDS, PORT_PROBE_INTERVAL_SECONDS
+    HANDSHAKE_INTERVAL_SECONDS, PORT_PROBE_INTERVAL_SECONDS,
+    DEFAULT_IDLE_THRESHOLD_KW, DEFAULT_WORKING_THRESHOLD_KW,
 )
 from utils.db_handler import init_postgres_db, init_sqlite_db, save_to_sqlite, insert_to_postgres
+
+_THRESHOLDS_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "config", "thresholds.json")
+)
+_thresholds_cache: dict = {}
+_thresholds_loaded_at: float = 0.0
+_THRESHOLDS_TTL: float = 30.0
+
+
+def _load_thresholds() -> dict:
+    global _thresholds_cache, _thresholds_loaded_at
+    now = time.time()
+    if now - _thresholds_loaded_at < _THRESHOLDS_TTL and _thresholds_cache:
+        return _thresholds_cache
+    try:
+        with open(_THRESHOLDS_PATH, "r") as f:
+            data = json.load(f)
+        _thresholds_cache = {k: v for k, v in data.items() if not k.startswith("_")}
+        _thresholds_loaded_at = now
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logging.warning("Could not read thresholds.json: %s", exc)
+    return _thresholds_cache
+
+
+def _get_device_thresholds(device_name: str):
+    """Returns (idle_threshold_kw, working_threshold_kw) for a device.
+
+    Lookup order: thresholds.json → DEVICES entry → global DEFAULT.
+    """
+    per_device = _load_thresholds().get(device_name, {})
+    device_cfg = next((d for d in DEVICES if d["name"] == device_name), {})
+    idle = float(per_device.get(
+        "idle_threshold_kw",
+        device_cfg.get("idle_threshold_kw", DEFAULT_IDLE_THRESHOLD_KW),
+    ))
+    working = float(per_device.get(
+        "working_threshold_kw",
+        device_cfg.get("working_threshold_kw", DEFAULT_WORKING_THRESHOLD_KW),
+    ))
+    return idle, working
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +78,7 @@ device_profiles = {}
 device_ports = {}
 device_status = {}
 active_clients = {}  # device_name -> live ModbusTcpClient, closed on shutdown
+_device_online_prev: dict = {}  # tracks previous per-device online state for transition logging
 
 def sanitize_sqlite_table_name(name):
     return MACHINE_TABLE_MAPPING.get(name, name.lower().replace(" ", "_"))
@@ -324,12 +371,19 @@ def poll_device(device):
                     logging.info(f"[{device_name}] Using profile: {selected_profile}")
                 device_profiles[device_name] = selected_profile
                 device_ports[device_name] = port
+                now_iso = datetime.datetime.now().isoformat(timespec="seconds")
                 device_status[device_name] = {
                     "online": True,
                     "host": host,
                     "port": port,
-                    "last_handshake": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "last_handshake": now_iso,
                 }
+                if _device_online_prev.get(device_name) is not True:
+                    logging.info(
+                        "[%s] STATE TRANSITION: offline → online at %s (host=%s port=%s)",
+                        device_name, now_iso, host, port,
+                    )
+                _device_online_prev[device_name] = True
                 valid_packet = True
                 consecutive_zero_reads = 0
             elif best_packet is not None:
@@ -374,7 +428,14 @@ def poll_device(device):
                 else:
                     logging.info(f"[{device_name}] All-zero telemetry (machine likely idle); keeping connection open.")
         else:
+            now_iso = datetime.datetime.now().isoformat(timespec="seconds")
             logging.warning(f"[{device_name}] Device offline - no Modbus handshake; writing diagnostic zero packet.")
+            if _device_online_prev.get(device_name) is not False:
+                logging.warning(
+                    "[%s] STATE TRANSITION: online → offline at %s",
+                    device_name, now_iso,
+                )
+            _device_online_prev[device_name] = False
             device_status[device_name] = {
                 "online": False,
                 "host": host,
@@ -407,9 +468,10 @@ def poll_device(device):
 
         if not all_zero:
             kw = float(total_kw_val) if not _is_zero(total_kw_val) else 0.0
-            if kw < 2.82:
+            idle_thresh, working_thresh = _get_device_thresholds(device_name)
+            if kw < idle_thresh:
                 state = {"state_label": "IDLE", "p_idle": 1.0, "p_working": 0.0}
-            elif kw > 3.05:
+            elif kw > working_thresh:
                 state = {"state_label": "WORKING", "p_idle": 0.0, "p_working": 1.0}
             else:
                 state = {"state_label": "TRANSITION", "p_idle": 0.5, "p_working": 0.5}

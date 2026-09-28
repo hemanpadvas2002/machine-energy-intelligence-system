@@ -11,20 +11,20 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 import xgboost as xgb
 
-st.set_page_config(page_title="ML KW/KWh Predictor", layout="wide")
+from ui.amtdc import apply_page_config, close_shell, inject_styles, render_shell, render_sidebar
 
-# -----------------------------------------------------------
-# PAGE HEADER
-# -----------------------------------------------------------
-st.title("⚙️ STRICT ML Predictor — KW / KW·hr (AMTDC)")
+apply_page_config("AMTDC ML Predictor")
+inject_styles()
+render_sidebar("ML Predictor")
+render_shell("ML Predictor", "Machine Learning", "KW / KWh Prediction", "ML Predictor")
+
 st.write("""
 This predictor uses **only Savitzky–Golay smoothed values**, removes leakage,
-drops highly correlated features (> 0.95), and predicts **KW** using 
+drops highly correlated features (> 0.95), and predicts **KW** using
 Linear Regression, Random Forest, and XGBoost.
 
-⚡ **KWh is NOT predicted using ML.**
-Instead, it is correctly computed from predicted KW:
-> KWh_next = Last_KWh + (Predicted_KW × 1 hour)
+**KWh is NOT predicted using ML.**
+It is computed from predicted KW: `KWh_next = Last_KWh + (Predicted_KW × 1 hour)`
 """)
 
 # -----------------------------------------------------------
@@ -168,7 +168,7 @@ if st.button("🚀 Run Strict Prediction"):
         # -----------------------------------------------------------
         # MODEL PERFORMANCE
         # -----------------------------------------------------------
-        st.subheader("📊 Test Set Performance")
+        st.subheader("Test Set Performance")
 
         c1, c2, c3 = st.columns(3)
 
@@ -189,7 +189,7 @@ if st.button("🚀 Run Strict Prediction"):
         }
         best_model_name = max(scores, key=scores.get)
 
-        st.success(f"🏆 Best performing model: {best_model_name}")
+        st.success(f"Best performing model: {best_model_name}")
 
         # -----------------------------------------------------------
         # 1-HOUR AHEAD FORECAST
@@ -223,7 +223,7 @@ if st.button("🚀 Run Strict Prediction"):
         # -----------------------------------------------------------
         # OUTPUT SECTION
         # -----------------------------------------------------------
-        st.subheader("🔮 1-Hour Ahead Forecast")
+        st.subheader("1-Hour Ahead Forecast")
 
         if target_col == "total_kw":
             st.write(f"**Linear Regression:** {future_kw_lr:.3f} KW")
@@ -239,7 +239,7 @@ if st.button("🚀 Run Strict Prediction"):
         # -----------------------------------------------------------
         # Summary
         # -----------------------------------------------------------
-        st.subheader("📘 Summary")
+        st.subheader("Summary")
         st.markdown(f"""
         - Machine: **{machine}**
         - Target selected: **{target_choice}**
@@ -249,7 +249,9 @@ if st.button("🚀 Run Strict Prediction"):
         """)
 
     except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        st.error(f"Error: {str(e)}")
 
 else:
     st.info("Choose machine and target, then click Run.")
+
+close_shell()

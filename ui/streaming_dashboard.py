@@ -1,16 +1,11 @@
-from config.settings import DEVICES
-
 
 def build_streaming_dashboard_html(
     default_machine: str,
     fallback_host: str,
     api_port: int,
     view_mode: str = "dashboard",
+    default_parameter: str = "avg_voltage_ln",
 ) -> str:
-    machine_options = "".join(
-        f'<option value="{machine}" {"selected" if machine == default_machine else ""}>{machine}</option>'
-        for machine in [device["name"] for device in DEVICES]
-    )
     live_kpi_markup = """
         <section class="kpi-grid">
           <div class="panel"><div id="kpi-label-1" class="metric-label">Live Raw Value</div><div id="kpi-total-energy" class="metric-value">0.00</div><div id="kpi-foot-1" class="metric-foot">Current sample</div></div>
@@ -21,10 +16,10 @@ def build_streaming_dashboard_html(
     """
     dashboard_kpi_markup = """
         <section class="kpi-grid">
-          <div class="panel"><div id="kpi-label-1" class="metric-label">Total Energy Consumption</div><div id="kpi-total-energy" class="metric-value">0</div><div id="kpi-foot-1" class="metric-foot">MWh equivalent snapshot</div></div>
-          <div class="panel"><div id="kpi-label-2" class="metric-label">Active Machines</div><div id="kpi-active-machines" class="metric-value">0/0</div><div id="kpi-foot-2" class="metric-foot">Connected now</div></div>
-          <div class="panel"><div id="kpi-label-3" class="metric-label">Average Load</div><div id="kpi-average-load" class="metric-value">0.0%</div><div id="kpi-foot-3" class="metric-foot">Across active units</div></div>
-          <div class="panel"><div id="kpi-label-4" class="metric-label">Peak Demand</div><div id="kpi-peak-demand" class="metric-value">0.0 kW</div><div id="kpi-foot-4" class="metric-foot">Latest machine peak</div></div>
+          <div class="panel"><div id="kpi-label-1" class="metric-label">Total Energy</div><div id="kpi-total-energy" class="metric-value">— kWh</div><div id="kpi-foot-1" class="metric-foot">kWh — all meters, cumulative</div></div>
+          <div class="panel"><div id="kpi-label-2" class="metric-label">Active Machines</div><div id="kpi-active-machines" class="metric-value">—/—</div><div id="kpi-foot-2" class="metric-foot">Wrote data in last 60 s</div></div>
+          <div class="panel"><div id="kpi-label-3" class="metric-label">Average Load</div><div id="kpi-average-load" class="metric-value">— kW</div><div id="kpi-foot-3" class="metric-foot">Avg kW across active machines</div></div>
+          <div class="panel"><div id="kpi-label-4" class="metric-label">Peak Demand</div><div id="kpi-peak-demand" class="metric-value">— kW</div><div id="kpi-foot-4" class="metric-foot">Max kW — last 24 hours</div></div>
         </section>
     """
     legend_markup = """
@@ -245,6 +240,10 @@ def build_streaming_dashboard_html(
           border-collapse: collapse;
         }}
         .status-table th {{
+          position: sticky;
+          top: 0;
+          background: var(--panel);
+          z-index: 2;
           text-align: left;
           color: var(--muted);
           text-transform: uppercase;
@@ -279,16 +278,6 @@ def build_streaming_dashboard_html(
     <body>
       <div class="dashboard">
         <div class="controls">
-          <div class="control-group">
-            <select id="machineSelect" class="control-select">{machine_options}</select>
-            <select id="parameterSelect" class="control-select">
-              <option value="avg_voltage_ln" selected>Avg Voltage LN</option>
-              <option value="avg_current">Avg Current</option>
-              <option value="total_kw">Total KW</option>
-              <option value="avg_voltage_ll">Avg Voltage LL</option>
-              <option value="total_net_kwh">Total Net KWh</option>
-            </select>
-          </div>
           <div id="engineBadge" class="engine-badge">Analytics Engine</div>
         </div>
         {live_kpi_markup if view_mode == "live" else dashboard_kpi_markup}
@@ -301,30 +290,17 @@ def build_streaming_dashboard_html(
             <div id="zeroWarning" class="warning"></div>
             <div class="fft-wrap">
               <div class="section-label">FFT Spectrum</div>
+              <div id="fftPlaceholder" class="warning" style="display:none;"></div>
               <canvas id="fftChart"></canvas>
             </div>
           </div>
-          <div class="panel">
-            <div class="section-label">Operation Modules</div>
-            <h3>Live Units</h3>
-            <div id="modeList" class="mode-list"></div>
+          <div class="panel" style="display:flex;flex-direction:column;">
+            <div class="section-label">Fleet Overview</div>
+            <h3>All Machines</h3>
+            <div id="machineList" class="mode-list" style="flex:1;overflow-y:auto;min-height:0;padding-right:4px"></div>
           </div>
         </section>
-        <section class="panel">
-          <div class="section-label">Unit Operational Status</div>
-          <h3>Live Machine State</h3>
-          <table class="status-table">
-            <thead>
-              <tr>
-                <th>Machine ID</th>
-                <th>Operational State</th>
-                <th>Load (kW)</th>
-                <th>Last Sync</th>
-              </tr>
-            </thead>
-            <tbody id="statusRows"></tbody>
-          </table>
-        </section>
+        {'<section class="panel"><div class="section-label">Unit Operational Status</div><h3 id="rawTableHeading">Live Machine State</h3><div style="overflow:auto;max-height:340px"><table class="status-table"><thead><tr><th>Timestamp</th><th>Voltage (V)</th><th>Current (A)</th><th>Power (kW)</th><th>Energy (kWh)</th><th>State</th></tr></thead><tbody id="rawTableBody"></tbody></table></div></section>' if view_mode != "live" else '<div id="rawTableBody" style="display:none"></div>'}
       </div>
       <script>
         Chart.register(window['chartjs-plugin-annotation']);
@@ -345,15 +321,14 @@ def build_streaming_dashboard_html(
         const apiBaseUrl = resolveApiBaseUrl();
         const state = {{
           machine: "{default_machine}",
-          parameter: "avg_voltage_ln",
+          parameter: "{default_parameter}",
           viewMode: "{view_mode}",
           variant: "all",
           chart: null,
           fftChart: null,
           kpiPolling: null,
           analyticsPolling: null,
-          yMin: null,
-          yMax: null,
+          rawPolling: null,
         }};
 
         const timeseriesChart = new Chart(document.getElementById('powerChart'), {{
@@ -405,7 +380,7 @@ def build_streaming_dashboard_html(
             }},
             scales: {{
               x: {{ grid: {{ display: false }}, ticks: {{ color: '#8ca0b6', maxTicksLimit: 6 }} }},
-              y: {{ beginAtZero: true, grid: {{ color: 'rgba(217,225,229,0.5)' }}, ticks: {{ color: '#8ca0b6' }} }}
+              y: {{ grid: {{ color: 'rgba(217,225,229,0.5)' }}, ticks: {{ color: '#8ca0b6' }} }}
             }}
           }}
         }});
@@ -458,10 +433,11 @@ def build_streaming_dashboard_html(
 
         function updateKpis(kpis) {{
           if (state.viewMode === 'live') return;
-          document.getElementById('kpi-total-energy').textContent = Number(kpis.total_energy || 0).toFixed(0);
-          document.getElementById('kpi-active-machines').textContent = `${{kpis.active_machines || 0}}/${{kpis.machine_count || 0}}`;
-          document.getElementById('kpi-average-load').textContent = `${{Number(kpis.average_load || 0).toFixed(1)}}%`;
-          document.getElementById('kpi-peak-demand').textContent = `${{Number(kpis.peak_demand || 0).toFixed(1)}} kW`;
+          const noData = !kpis || (kpis.active_machines === 0 && kpis.total_energy === 0 && kpis.peak_demand === 0);
+          document.getElementById('kpi-total-energy').textContent = noData ? '— kWh' : (Number(kpis.total_energy || 0).toFixed(1) + ' kWh');
+          document.getElementById('kpi-active-machines').textContent = `${{kpis.active_machines ?? '—'}}/${{kpis.machine_count ?? '—'}}`;
+          document.getElementById('kpi-average-load').textContent = noData ? '— kW' : (Number(kpis.average_load || 0).toFixed(3) + ' kW');
+          document.getElementById('kpi-peak-demand').textContent = noData ? '— kW' : (Number(kpis.peak_demand || 0).toFixed(3) + ' kW');
         }}
 
         function updateRealtimeKpis(payload) {{
@@ -497,52 +473,53 @@ def build_streaming_dashboard_html(
           el.textContent = engine === 'matlab' ? 'MATLAB Engine' : engine === 'scipy-fallback' ? 'SciPy Fallback' : 'Analytics Engine';
         }}
 
-        function updateModes(modes, zeroOnlySignal, noValidTelemetry) {{
-          const list = document.getElementById('modeList');
-          list.innerHTML = '';
-          if (!modes.length) {{
-            const note = document.createElement('div');
-            note.className = 'warning';
-            note.style.display = 'block';
-            note.style.marginTop = '8px';
-            note.textContent = zeroOnlySignal
-              ? 'Machine is currently idle or offline. Values are 0.0 — MOD units will appear when live telemetry resumes.'
-              : noValidTelemetry
-                ? 'Waiting for telemetry data from this machine.'
-              : 'No mode values available for the selected range.';
-            list.appendChild(note);
+        function updateMachineList(machines) {{
+          const list = document.getElementById('machineList');
+          if (!list) return;
+          if (!machines || !machines.length) {{
+            list.innerHTML = '<div class="warning" style="display:block;margin-top:8px">No machine data available.</div>';
             return;
           }}
-
-          modes.forEach((mode) => {{
-            const row = document.createElement('div');
-            row.className = 'mode-row';
-            row.style.borderLeftColor = mode.tone;
-            row.innerHTML = `
-              <div class="section-label">${{mode.label}}</div>
+          list.innerHTML = machines.map((m) => {{
+            const working = Math.abs(m.load_kw || 0) > 0.01;
+            const badgeClass = m.online ? (working ? 'state-optimal' : 'state-idle') : 'state-idle';
+            const stateText = m.online ? (working ? 'WORKING' : 'IDLE') : 'OFFLINE';
+            const borderColor = m.online ? (working ? '#0b7171' : '#8ba0b8') : '#cf2e2e';
+            const label = (m.machine || '').replace(/_/g, ' ');
+            const hasSignal = m.online && (m.avg_voltage_ln || 0) > 0;
+            const voltageStr = hasSignal ? (Number(m.avg_voltage_ln).toFixed(1) + ' V') : '—';
+            const kwStr = hasSignal ? (Number(m.load_kw || 0).toFixed(3) + ' kW') : '—';
+            return `<div class="mode-row" style="border-left-color:${{borderColor}}">
+              <div class="section-label">${{label}}</div>
               <div class="mode-head">
-                <strong>${{Number(mode.value).toFixed(2)}}</strong>
-                <span class="mode-pill">${{mode.hits}} hits</span>
+                <strong>${{voltageStr}} &nbsp; ${{kwStr}}</strong>
+                <span class="state-badge ${{badgeClass}}">${{stateText}}</span>
               </div>
-            `;
-            list.appendChild(row);
-          }});
+            </div>`;
+          }}).join('');
         }}
 
-        function updateStatusRows(rows) {{
-          const tbody = document.getElementById('statusRows');
-          tbody.innerHTML = '';
-          rows.forEach((row) => {{
-            const tr = document.createElement('tr');
-            const badgeClass = row.state === 'Optimal' ? 'state-optimal' : 'state-idle';
-            tr.innerHTML = `
-              <td><strong>${{row.machine}}</strong></td>
-              <td><span class="state-badge ${{badgeClass}}">${{row.state}}</span></td>
-              <td>${{Number(row.load_kw || 0).toFixed(2)}}</td>
-              <td>${{formatTime(row.last_sync)}}</td>
-            `;
-            tbody.appendChild(tr);
-          }});
+        function updateRawTable(rows) {{
+          const tbody = document.getElementById('rawTableBody');
+          if (!tbody) return;
+          const heading = document.getElementById('rawTableHeading');
+          if (heading) heading.textContent = state.machine + ' — Live Readings';
+          if (!rows || !rows.length) {{
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No live data yet for ${{state.machine}}</td></tr>`;
+            return;
+          }}
+          tbody.innerHTML = rows.map((row) => {{
+            const badgeClass = row.state_label === 'WORKING' ? 'state-optimal' : 'state-idle';
+            const ts = row.timestamp ? row.timestamp.substring(11, 19) : '—';
+            return `<tr>
+              <td>${{ts}}</td>
+              <td>${{Number(row.avg_voltage_ln || 0).toFixed(1)}}</td>
+              <td>${{Number(row.avg_current    || 0).toFixed(3)}}</td>
+              <td>${{Number(row.total_kw       || 0).toFixed(3)}}</td>
+              <td>${{Number(row.total_net_kwh  || 0).toFixed(2)}}</td>
+              <td><span class="state-badge ${{badgeClass}}">${{row.state_label || '—'}}</span></td>
+            </tr>`;
+          }}).join('');
         }}
 
         function renderWarning(payload) {{
@@ -552,7 +529,10 @@ def build_streaming_dashboard_html(
             warning.textContent = `Waiting for telemetry from ${{state.machine}}. The machine may be starting up or not yet connected.`;
           }} else if (payload.zero_only_signal) {{
             warning.style.display = 'block';
-            warning.textContent = `${{state.machine}} is currently idle or offline for ${{state.parameter}}. The timeline is maintained with 0.0 values.`;
+            warning.textContent = `${{state.machine}} is reporting zero for ${{state.parameter}} — machine is powered but idle (no load on this channel).`;
+          }} else if (payload.constant_signal) {{
+            warning.style.display = 'block';
+            warning.textContent = `${{state.parameter}} is near-constant — expected for cumulative metrics (e.g. kWh) when the machine is in standby.`;
           }} else {{
             warning.style.display = 'none';
             warning.textContent = '';
@@ -560,37 +540,18 @@ def build_streaming_dashboard_html(
         }}
 
         function smoothAxis(allValues) {{
-          if (!allValues.length) return;
-          const localMin = Math.min(...allValues);
-          const localMax = Math.max(...allValues);
-          const span = Math.max(localMax - localMin, 0.05);
-          const padding = Math.max(span * 0.18, 0.02);
-          let targetMin = localMin - padding;
-          let targetMax = localMax + padding;
-
-          if (localMin >= 0 && localMax <= padding) {{
-            targetMin = 0;
+          const valid = allValues.filter(v => v !== null && v !== undefined && !isNaN(v));
+          if (!valid.length) {{
+            state.chart.options.scales.y.min = undefined;
+            state.chart.options.scales.y.max = undefined;
+            return;
           }}
-          if (localMax <= 0 && localMin >= -padding) {{
-            targetMax = 0;
-          }}
-
-          if (state.yMin === null || state.yMax === null) {{
-            state.yMin = targetMin;
-            state.yMax = targetMax;
-          }} else {{
-            state.yMin = state.yMin * 0.84 + targetMin * 0.16;
-            state.yMax = state.yMax * 0.84 + targetMax * 0.16;
-          }}
-
-          if (state.yMax - state.yMin < 0.05) {{
-            const center = (state.yMax + state.yMin) / 2;
-            state.yMin = center - 0.025;
-            state.yMax = center + 0.025;
-          }}
-
-          state.chart.options.scales.y.min = Number(state.yMin.toFixed(2));
-          state.chart.options.scales.y.max = Number(state.yMax.toFixed(2));
+          const localMin = Math.min(...valid);
+          const localMax = Math.max(...valid);
+          const span = Math.max(localMax - localMin, 0.1);
+          const padding = span * 0.12;
+          state.chart.options.scales.y.min = Number((localMin - padding).toFixed(2));
+          state.chart.options.scales.y.max = Number((localMax + padding).toFixed(2));
         }}
 
         function updateAnnotations(modes) {{
@@ -645,15 +606,23 @@ def build_streaming_dashboard_html(
           smoothAxis([...(payload.values || []), ...(payload.filtered || []), ...(payload.smoothed || []), ...((payload.modes || []).map(mode => Number(mode.value || 0)))]);
           updateRealtimeKpis(payload);
           state.chart.update('active');
-          updateModes(payload.modes || [], payload.zero_only_signal, payload.no_valid_telemetry);
           renderWarning(payload);
           updateEngine(payload.engine);
           setVariant(state.variant);
         }}
 
         function updateFft(payload) {{
+          const fftData = payload.fft || [];
+          const hasContent = fftData.length > 0 && fftData.some((v) => v > 1e-3);
+          const placeholder = document.getElementById('fftPlaceholder');
+          const canvas = document.getElementById('fftChart');
+          if (placeholder) {{
+            placeholder.style.display = hasContent ? 'none' : 'block';
+            if (!hasContent) placeholder.textContent = 'No significant frequency content — signal is near-constant or machine is in standby.';
+          }}
+          if (canvas) canvas.style.display = hasContent ? 'block' : 'none';
           state.fftChart.data.labels = (payload.fft_frequency || []).map((value) => Number(value).toFixed(2));
-          state.fftChart.data.datasets[0].data = payload.fft || [];
+          state.fftChart.data.datasets[0].data = hasContent ? fftData : [];
           state.fftChart.update('active');
           updateEngine(payload.engine);
         }}
@@ -677,9 +646,21 @@ def build_streaming_dashboard_html(
               parameter: state.parameter
             }});
             updateKpis(payload.kpis || {{}});
-            updateStatusRows(payload.machines || []);
+            updateMachineList(payload.machines || []);
           }} catch (error) {{
             console.error('Dashboard fetch failed', error);
+          }}
+        }}
+
+        async function refreshRawTable() {{
+          try {{
+            const payload = await fetchJson('/api/telemetry/raw', {{
+              machine: state.machine,
+              limit: 30
+            }});
+            updateRawTable(payload.rows || []);
+          }} catch (error) {{
+            console.error('Raw table fetch failed', error);
           }}
         }}
 
@@ -699,13 +680,15 @@ def build_streaming_dashboard_html(
         function schedulePolling() {{
           if (state.kpiPolling) window.clearInterval(state.kpiPolling);
           if (state.analyticsPolling) window.clearInterval(state.analyticsPolling);
+          if (state.rawPolling) window.clearInterval(state.rawPolling);
           state.kpiPolling = window.setInterval(refreshDashboard, 1500);
           state.analyticsPolling = window.setInterval(refreshAnalytics, 3000);
+          state.rawPolling = window.setInterval(refreshRawTable, 2000);
         }}
 
         function resetCharts() {{
-          state.yMin = null;
-          state.yMax = null;
+          state.chart.options.scales.y.min = undefined;
+          state.chart.options.scales.y.max = undefined;
           state.chart.data.labels = [];
           state.chart.data.datasets.forEach((dataset) => dataset.data = []);
           state.fftChart.data.labels = [];
@@ -714,25 +697,13 @@ def build_streaming_dashboard_html(
           state.fftChart.update('none');
         }}
 
-        document.getElementById('machineSelect').addEventListener('change', (event) => {{
-          state.machine = event.target.value;
-          resetCharts();
-          refreshDashboard();
-          refreshAnalytics();
-        }});
-
-        document.getElementById('parameterSelect').addEventListener('change', (event) => {{
-          state.parameter = event.target.value;
-          resetCharts();
-          refreshAnalytics();
-        }});
-
         document.querySelectorAll('.variant-pill').forEach((button) => {{
           button.addEventListener('click', () => setVariant(button.dataset.variant));
         }});
 
         refreshDashboard();
         refreshAnalytics();
+        refreshRawTable();
         schedulePolling();
       </script>
     </body>

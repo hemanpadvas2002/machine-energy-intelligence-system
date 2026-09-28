@@ -1,5 +1,12 @@
 [server]
 address = "0.0.0.0"
 port = 8501
-sslCertFile = "certs/server.crt"
-sslKeyFile = "certs/server.key"
+
+[theme]
+base = "light"
+primaryColor = "#0b7171"
+backgroundColor = "#eef2f4"
+secondaryBackgroundColor = "#f3f6f8"
+textColor = "#11181c"
+font = "sans serif"
+

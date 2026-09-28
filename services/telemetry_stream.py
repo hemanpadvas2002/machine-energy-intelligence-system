@@ -28,7 +28,7 @@ STREAM_PORT = 8765
 WINDOW_SIZE = 60
 MODE_LIMIT = 5
 RATE_LIMIT_WINDOW_SECONDS = 60
-RATE_LIMIT_REQUESTS = 240
+RATE_LIMIT_REQUESTS = 600
 _rate_limit_lock = threading.Lock()
 _rate_limit_hits = {}
 
@@ -220,10 +220,12 @@ def _build_series(machine, parameter="total_kw", window_size=WINDOW_SIZE):
         cache_key=cache_key,
     )
     _zero_only = bool(values) and all(value == 0.0 for value in values)
-    if values and not _zero_only:
+    # Only flag constant_signal for cumulative kWh — the only parameter where a flat
+    # line is genuinely confusing (the value barely changes even when the machine runs).
+    if parameter == "total_net_kwh" and values and not _zero_only:
         _mean = sum(values) / len(values)
         _std = (sum((v - _mean) ** 2 for v in values) / len(values)) ** 0.5
-        _constant = bool(_std < 0.05)
+        _constant = bool(_std / (abs(_mean) + 1e-9) < 0.0005)
     else:
         _constant = False
     payload = {

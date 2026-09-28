@@ -6,8 +6,11 @@ import pandas as pd
 from config.settings import MACHINE_TABLE_MAPPING, POSTGRES_CONFIG, SQLITE_DB
 
 logger = logging.getLogger(__name__)
-POSTGRES_RETRY_ATTEMPTS = 5
-POSTGRES_RETRY_DELAY_SECONDS = 1.5
+POSTGRES_RETRY_ATTEMPTS = 2
+POSTGRES_RETRY_DELAY_SECONDS = 0.5
+
+# Circuit breaker: skip PG for 30s after a failure so the SQLite fallback is instant.
+_pg_circuit_open_until: float = 0.0
 
 POSTGRES_MACHINE_TABLE_SCHEMA = """
     id SERIAL PRIMARY KEY,
@@ -26,19 +29,26 @@ def get_postgres_conn():
         user=POSTGRES_CONFIG["user"],
         password=POSTGRES_CONFIG["password"],
         host=POSTGRES_CONFIG["host"],
-        port=POSTGRES_CONFIG["port"]
+        port=POSTGRES_CONFIG["port"],
+        connect_timeout=2,
     )
 
 
 def _get_postgres_conn_with_retry():
+    global _pg_circuit_open_until
+    if time.time() < _pg_circuit_open_until:
+        raise psycopg2.OperationalError("PostgreSQL unavailable (circuit breaker)")
     last_error = None
     for attempt in range(POSTGRES_RETRY_ATTEMPTS):
         try:
-            return get_postgres_conn()
+            conn = get_postgres_conn()
+            _pg_circuit_open_until = 0.0  # reset on success
+            return conn
         except psycopg2.OperationalError as exc:
             last_error = exc
             if attempt < POSTGRES_RETRY_ATTEMPTS - 1:
                 time.sleep(POSTGRES_RETRY_DELAY_SECONDS)
+    _pg_circuit_open_until = time.time() + 30.0
     raise last_error
 
 def get_sqlite_conn():
